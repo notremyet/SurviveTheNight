@@ -5,6 +5,8 @@ from map import Board
 from player import Player
 from furniture import FurnitureManager
 from interactables import InteractableManager
+from ui import GameUI
+from game_logic import GameState
 
 pygame.init()
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
@@ -27,6 +29,8 @@ board = Board()
 player = Player(start_cell="B2")
 furniture = FurnitureManager(board, reserved={player.cell, "I7"})
 interactables = InteractableManager()
+ui = GameUI()
+game = GameState()
 
 # Objects take priority over the existing furniture if a future placement overlaps.
 # Existing fixed placements in furniture.py do not overlap these seven cells.
@@ -47,7 +51,9 @@ while running:
             elif interactables.hidden_in is None:
                 moved = player.handle_key(event.key, board, furniture)
                 if moved:
+                    game.use_action()
                     print("Player moved to:", player.cell)
+                    print("Actions left:", game.actions_left)
 
     screen.fill((20, 18, 28))
     screen.blit(house_image, (MAP_X, MAP_Y))
@@ -59,10 +65,27 @@ while running:
 
     # On-screen interaction hint and feedback.
     msg = font.render(interactables.message, True, (255, 255, 255))
-    msg_bg = pygame.Surface((min(WIDTH, msg.get_width() + 20), 32), pygame.SRCALPHA)
-    msg_bg.fill((0, 0, 0, 180))
-    screen.blit(msg_bg, (10, 8))
-    screen.blit(msg, (20, 12))
+    msg_bg = pygame.Surface(
+        (min(WIDTH - 30, msg.get_width() + 20), 36),
+        pygame.SRCALPHA
+    )
+    msg_bg.fill((45, 35, 25, 220))
+    hint_x = 15
+    hint_y = HEIGHT - 110
+    screen.blit(msg_bg, (hint_x, hint_y))
+    screen.blit(msg, (hint_x + 10, hint_y + 7))
+
+    ui.draw_hud(
+    screen,
+    hp=game.hp,
+    max_hp=game.max_hp,
+    round_number=game.round_number,
+    max_rounds=game.max_rounds,
+    actions=game.actions_left,
+    max_actions=game.max_actions,
+    noise=game.noise,
+    message=game.message
+    )
 
     pygame.display.flip()
     clock.tick(FPS)
