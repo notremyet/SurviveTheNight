@@ -47,13 +47,25 @@ while running:
             running = False
         elif event.type == pygame.KEYDOWN:
             if event.key == pygame.K_e:
-                interactables.interact(player.cell)
+
+                # Only allow interaction during Player Turn
+                if game.current_turn == "player" and game.actions_left > 0:
+                    result = interactables.interact(player.cell)
+
+                    # Successful interactions cost 1 action
+                    if result in ("hide", "leave", "chest_open"):
+                        game.use_action()
+
+                        print("Interaction:", result)
+                        print("Actions left:", game.actions_left)
             elif interactables.hidden_in is None:
-                moved = player.handle_key(event.key, board, furniture)
-                if moved:
-                    game.use_action()
-                    print("Player moved to:", player.cell)
-                    print("Actions left:", game.actions_left)
+                if game.current_turn == "player" and game.actions_left > 0:
+                    moved = player.handle_key(event.key, board, furniture)
+
+                    if moved:
+                        game.use_action()
+                        print("Player moved to:", player.cell)
+                        print("Actions left:", game.actions_left)
 
     screen.fill((20, 18, 28))
     screen.blit(house_image, (MAP_X, MAP_Y))
@@ -84,7 +96,7 @@ while running:
     actions=game.actions_left,
     max_actions=game.max_actions,
     noise=game.noise,
-    message=game.message
+    message=f"{game.current_turn.upper()} TURN - {game.message}"
     )
 
     pygame.display.flip()
