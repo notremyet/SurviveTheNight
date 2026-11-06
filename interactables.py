@@ -51,7 +51,7 @@ class InteractableManager:
             return None
 
         if obj.kind == "wardrobe":
-            obj.opened = True
+            obj.opened = False
             self.hidden_in = obj.cell
             self.message = "Hiding in wardrobe - press E to leave"
             return "hide"
