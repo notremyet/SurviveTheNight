@@ -42,6 +42,29 @@ class Inventory:
         self.remove_item(ItemType.MEDKIT)
         return min(current_hp + 1, 3)
 
+    
+    def use_medkit_on_player(self, player):
+        # Check if Medkit exists
+        if not self.has_item(ItemType.MEDKIT):
+            return False
+
+        # Cannot heal a dead player
+        if player.is_dead:
+            return False
+
+        # Do not consume Medkit when HP is full
+        if player.hp >= player.max_hp:
+            return False
+
+        # Heal the actual Player
+        healed = player.heal(1)
+
+        if healed > 0:
+            self.remove_item(ItemType.MEDKIT)
+            return True
+
+        return False
+
     # ---------- Key ----------
 
     def has_key(self):
