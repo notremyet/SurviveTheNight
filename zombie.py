@@ -318,21 +318,35 @@ class ZombieManager:
     def alerted(self):
         return any(z.state == CHASE for z in self.zombies)
 
-    def take_turn(self, player_cell, player_hidden=False):
+    def take_turn(self, player_cell, player_hidden=False, priority_noise=None):
         """Run one zombie phase. Returns a list of ZombieEvent."""
         events = []
         heard = [(n, sound_reach(self.board, n.cell, n.loudness)) for n in self.noises]
         for z in self.zombies:
-            self._zombie_turn(z, player_cell, player_hidden, heard, events)
+            self._zombie_turn(z, player_cell, player_hidden, heard, events, priority_noise)
             z.compute_visible(self.board)
         self.noises.clear()
         self.noise_level = 0
         return events
 
     # ---- AI
-    def _zombie_turn(self, z, player_cell, hidden, heard, events):
-        # 1) sense
-        if not hidden and z.can_see(self.board, player_cell):
+    def _zombie_turn(self, z, player_cell, hidden, heard, events, priority_noise=None):
+        # A newly activated Noise Maker has priority over the usual sensing.
+        # Only zombies within its sound radius react to it.
+        if priority_noise is not None:
+            maker_cell, loudness = priority_noise
+            if z.cell in sound_reach(self.board, maker_cell, loudness):
+                z.noise_maker_target = maker_cell
+
+        maker_target = getattr(z, "noise_maker_target", None)
+        if maker_target is not None and z.cell == maker_target:
+            z.noise_maker_target = None
+            maker_target = None
+
+        # Until reaching the maker location, investigate it first.
+        if maker_target is not None:
+            self._set_state(z, INVESTIGATE, maker_target, events)
+        elif not hidden and z.can_see(self.board, player_cell):
             self._set_state(z, CHASE, player_cell, events)
         else:
             noise = self._loudest_heard(z, heard)
@@ -358,7 +372,23 @@ class ZombieManager:
                 stuck = True
                 break
             z.step_to(nxt)
-            if z.state != CHASE and not hidden and z.can_see(self.board, player_cell):
+            # When the maker is reached, return to regular AI on the next
+            # available step/turn, without changing the team's movement budget.
+            if getattr(z, "noise_maker_target", None) == z.cell:
+                z.noise_maker_target = None
+                # Maker reached: fall back to regular sound investigation;
+                # if there is no other audible sound, resume patrol.
+                usual = self._loudest_heard(
+                    z, [(n, reach) for n, reach in heard
+                        if n.source != "noise_maker"]
+                )
+                if usual is not None:
+                    self._set_state(z, INVESTIGATE, usual.cell, events)
+                else:
+                    self._set_state(z, PATROL, None, events)
+            if (getattr(z, "noise_maker_target", None) is None
+                    and z.state != CHASE and not hidden
+                    and z.can_see(self.board, player_cell)):
                 self._set_state(z, CHASE, player_cell, events)
 
         # 3) nothing left to walk to
