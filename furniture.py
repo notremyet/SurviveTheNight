@@ -393,8 +393,8 @@ class FurnitureManager:
         self.blocked_cells.clear()
         self.occupied_cells.clear()
 
-        self.place("bed", ("A1",), False)
-        self.place("fridge", ("A3",), False)
+        self.place("bed", ("A1",), True)
+        self.place("fridge", ("A3",), True)
         # Sofa against the upper living-room wall.
         self.place("sofa", ("H1", "I1"), True, "top")
         # Table in D3.
