@@ -1,15 +1,55 @@
-
 import pygame
-
+from pathlib import Path
+from PIL import Image, ImageSequence
 
 class GameEndScreen:
     def __init__(self, screen):
         self.screen = screen
         self.width, self.height = screen.get_size()
 
-        self.title_font = pygame.font.SysFont("arial", 56, bold=True)
-        self.font = pygame.font.SysFont("arial", 25)
-        self.small_font = pygame.font.SysFont("arial", 18)
+        # Load animated WIN background
+        gif_path = Path(__file__).resolve().parent / "assets" / "win.gif"
+
+        self.win_bg_frames = []
+        gif = Image.open(gif_path)
+
+        for frame in ImageSequence.Iterator(gif):
+            frame = frame.convert("RGB")
+            frame = frame.resize((self.width, self.height))
+
+            surface = pygame.image.fromstring(
+                frame.tobytes(),
+                frame.size,
+                "RGB"
+            )
+            self.win_bg_frames.append(surface)
+
+        self.win_frame_delay = 300
+        self.win_animation_start = pygame.time.get_ticks()
+
+        # Load animated GAME OVER background
+        lose_path = Path(__file__).resolve().parent / "assets" / "lose.gif"
+
+        self.lose_bg_frames = []
+        lose_gif = Image.open(lose_path)
+
+        for frame in ImageSequence.Iterator(lose_gif):
+            frame = frame.convert("RGB")
+            frame = frame.resize((self.width, self.height))
+
+            surface = pygame.image.fromstring(
+                frame.tobytes(), frame.size, "RGB"
+            )
+            self.lose_bg_frames.append(surface)
+
+        self.lose_frame_delay = 350
+        self.lose_animation_start = pygame.time.get_ticks()
+
+        font_path = "assets/PressStart2P.ttf"
+
+        self.title_font = pygame.font.Font(font_path, 40)
+        self.font = pygame.font.Font(font_path, 18)
+        self.small_font = pygame.font.Font(font_path, 12)
 
         self.status = "won"
         self.reason = ""
@@ -32,9 +72,22 @@ class GameEndScreen:
 
         self.status = status
         self.reason = reason
+        self.win_animation_start = pygame.time.get_ticks()
+        self.lose_animation_start = pygame.time.get_ticks()
 
     def draw(self):
-        self.screen.fill((20, 18, 28))
+        if self.status == "won" and self.win_bg_frames:
+            elapsed = pygame.time.get_ticks() - self.win_animation_start
+            index = (elapsed // self.win_frame_delay) % len(self.win_bg_frames)
+            self.screen.blit(self.win_bg_frames[index], (0, 0))
+
+        elif self.status == "lost" and self.lose_bg_frames:
+            elapsed = pygame.time.get_ticks() - self.lose_animation_start
+            index = (elapsed // self.lose_frame_delay) % len(self.lose_bg_frames)
+            self.screen.blit(self.lose_bg_frames[index], (0, 0))
+
+        else:
+            self.screen.fill((20, 18, 28))
 
         if self.status == "won":
             title_text = "YOU SURVIVED!"
