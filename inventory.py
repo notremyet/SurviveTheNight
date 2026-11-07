@@ -69,7 +69,7 @@ class Inventory:
         # Noise Maker ตัวจริงอยู่บนแผนที่
         self.placed_noise_makers.append({
             "id": remote_id,
-            "cell": tuple(player_cell),
+            "cell": player_cell,
             "activated": False,
             "used_this_turn": False
         })
