@@ -54,6 +54,7 @@ LINGER_ROUNDS = 2        # rounds spent looking around before giving up
 DETOUR_LIMIT = 3         # extra cells a zombie will walk to get around another zombie
 MOVE_SPEED = 5.0         # animation only: cells per second
 HIT_FX_TIME = 0.9        # seconds the bite marks stay on screen
+SPAWN_TIME = 0.8         # seconds the "rising from the ground" frame is shown
 
 # Loudness = how many steps a sound travels through the house.
 NOISE_WALK = 1
@@ -74,8 +75,9 @@ DEFAULT_SPAWNS = [
     {"cell": "E7", "patrol": ["E7", "A6", "B5", "C4", "B5", "A6"], "facing": (-1, 0)},
 ]
 
-# Optional sprite strips (one row of square frames each). If walk.png is
-# missing, a placeholder zombie is drawn with pygame shapes.
+# The team's zombie art: zombie_<down|up|left|right>_<stand|walk|attack>.png
+# plus zombie_spawn.png. If any pose is missing, a placeholder zombie is drawn
+# with pygame shapes instead.
 ASSET_DIR = Path(__file__).resolve().parent / "assets" / "zombie"
 
 
@@ -203,8 +205,7 @@ class Zombie:
         self.walk_time = 0.0
         self.lunge = 0.0          # 1 -> 0 while the attack plays
         self.icon_pop = 0.0       # 1 -> 0 when "!" or "?" appears
-        self.side = 1             # last horizontal facing, for side-view sprites
-        self._set_facing(facing)
+        self.spawn_time = SPAWN_TIME
 
     # senses
     def can_see(self, board, target):
@@ -234,7 +235,7 @@ class Zombie:
     def step_to(self, cell):
         x0, y0 = cell_to_xy(self.cell)
         x1, y1 = cell_to_xy(cell)
-        self._set_facing((x1 - x0, y1 - y0))
+        self.facing = (x1 - x0, y1 - y0)
         self.cell = cell
         self.move_queue.append((x1, y1))
         if self.path and self.path[0] == cell:
@@ -245,17 +246,12 @@ class Zombie:
         tx, ty = cell_to_xy(cell)
         dx, dy = tx - zx, ty - zy
         if dx and abs(dx) >= abs(dy):
-            self._set_facing((1 if dx > 0 else -1, 0))
+            self.facing = (1 if dx > 0 else -1, 0)
         elif dy:
-            self._set_facing((0, 1 if dy > 0 else -1))
+            self.facing = (0, 1 if dy > 0 else -1)
 
     def turn_clockwise(self):
-        self._set_facing(DIRS[(DIRS.index(self.facing) + 1) % 4])
-
-    def _set_facing(self, facing):
-        self.facing = facing
-        if facing[0]:
-            self.side = facing[0]
+        self.facing = DIRS[(DIRS.index(self.facing) + 1) % 4]
 
     @property
     def busy(self):
@@ -276,6 +272,7 @@ class Zombie:
             self.walk_time += dt
         self.lunge = max(0.0, self.lunge - dt * 3)
         self.icon_pop = max(0.0, self.icon_pop - dt * 4)
+        self.spawn_time = max(0.0, self.spawn_time - dt)
 
 
 # ---------------------------------------------------------------- manager
@@ -446,6 +443,9 @@ class ZombieManager:
 
     # ---- per frame
     def update(self, dt):
+        # The first frame (or a frame after the window was dragged) can report a
+        # huge dt; cap it so animations never skip.
+        dt = min(dt, 0.05)
         for z in self.zombies:
             z.update(dt)
         for ring in self._rings:
@@ -502,8 +502,7 @@ class ZombieManager:
     def draw(self, surface, get_cell_center):
         """Zombies, alert icons and bite effects. Draw after the player."""
         cx0, cy0, tw, th = self._geometry(get_cell_center)
-        size = int(min(tw, th) * 0.9)
-        frames = self._get_frames(size)
+        frames = self._get_frames((int(tw * 0.95), int(th * 0.92)))
 
         for z in sorted(self.zombies, key=lambda zz: zz.draw_y):
             px, py = self._to_px(cx0, cy0, tw, th, z.draw_x, z.draw_y)
@@ -515,16 +514,24 @@ class ZombieManager:
             if moving:
                 py -= abs(math.sin(z.walk_time * 14)) * 3
 
-            shadow = pygame.Surface((int(size * 0.7), int(size * 0.5)), pygame.SRCALPHA)
-            pygame.draw.ellipse(shadow, (0, 0, 0, 80), shadow.get_rect())
-            surface.blit(shadow, shadow.get_rect(center=(px + 3, py + 6)))
-
-            frame_index = int(z.walk_time * 8) if moving else 0
-            image = self._pick_frame(frames, z, frame_index)
-            surface.blit(image, image.get_rect(center=(round(px), round(py))))
+            image = self._pick_frame(frames, z, moving)
+            w, h = image.get_size()
+            if frames["kind"] == "pose":
+                # Front-view character: feet near the bottom of its cell.
+                feet = py + th * 0.42
+                shadow = pygame.Surface((int(tw * 0.5), int(th * 0.16)), pygame.SRCALPHA)
+                pygame.draw.ellipse(shadow, (0, 0, 0, 90), shadow.get_rect())
+                surface.blit(shadow, shadow.get_rect(center=(round(px), round(feet - 3))))
+                rect = image.get_rect(midbottom=(round(px), round(feet)))
+            else:
+                shadow = pygame.Surface((int(w * 0.7), int(h * 0.5)), pygame.SRCALPHA)
+                pygame.draw.ellipse(shadow, (0, 0, 0, 80), shadow.get_rect())
+                surface.blit(shadow, shadow.get_rect(center=(px + 3, py + 6)))
+                rect = image.get_rect(center=(round(px), round(py)))
+            surface.blit(image, rect)
 
             if z.state in (CHASE, INVESTIGATE):
-                self._draw_icon(surface, px, py - size * 0.62, z)
+                self._draw_icon(surface, px, min(rect.top, py - th * 0.45) - 10, z)
 
         for cell, age in self._hits:
             x, y = get_cell_center(cell)
@@ -572,45 +579,51 @@ class ZombieManager:
                 text, (int(text.get_width() * scale), int(text.get_height() * scale)))
         surface.blit(text, text.get_rect(center=(int(x), int(y) + 1)))
 
-    def _get_frames(self, size):
-        if self._frames is None or self._frame_size != size:
-            self._frames = _load_sprite_frames(size) or _make_placeholder_frames(size)
-            self._frame_size = size
+    def _get_frames(self, box):
+        if self._frames is None or self._frame_size != box:
+            self._frames = _load_sprite_frames(box) or _make_placeholder_frames(int(min(box) * 0.98))
+            self._frame_size = box
         return self._frames
 
     @staticmethod
-    def _pick_frame(frames, z, index):
+    def _pick_frame(frames, z, moving):
         if frames["kind"] == "topdown":
             seq = frames[z.facing]
-            return seq[index % len(seq)]
-        seq = frames["attack"] if z.lunge > 0 and frames.get("attack") else frames["walk"]
-        image = seq[index % len(seq)]
-        return image if z.side > 0 else pygame.transform.flip(image, True, False)
+            return seq[int(z.walk_time * 8) % len(seq)] if moving else seq[0]
+        if z.spawn_time > 0 and frames.get("spawn"):
+            return frames["spawn"]
+        poses = frames[z.facing]
+        if z.lunge > 0:
+            return poses["attack"]
+        if moving:                         # 2-frame walk cycle: walk, stand, walk, ...
+            return poses["walk"] if int(z.walk_time * 6) % 2 == 0 else poses["stand"]
+        return poses["stand"]
 
 
 # ---------------------------------------------------------------- sprites
-def _load_strip(path, size):
-    sheet = pygame.image.load(str(path)).convert_alpha()
-    fh = sheet.get_height()
-    frames = []
-    for i in range(max(1, sheet.get_width() // fh)):
-        frame = sheet.subsurface((i * fh, 0, fh, fh)).copy()
-        w, h = frame.get_size()
-        ratio = size / max(w, h)
-        frames.append(pygame.transform.smoothscale(frame, (max(1, int(w * ratio)), max(1, int(h * ratio)))))
-    return frames
+DIR_NAMES = {(0, 1): "down", (0, -1): "up", (-1, 0): "left", (1, 0): "right"}
+POSES = ("stand", "walk", "attack")
 
 
-def _load_sprite_frames(size):
-    """Side-view sprite strips: assets/zombie/walk.png (+ optional attack.png),
-    square frames in one row, drawn facing right."""
-    walk = ASSET_DIR / "walk.png"
-    if not walk.exists():
+def _load_sprite_frames(box):
+    """Load the team's zombie art. Every pose was drawn on the same canvas, so
+    one scale for all of them keeps the character the same size in every pose."""
+    paths = {(d, p): ASSET_DIR / f"zombie_{name}_{p}.png" for d, name in DIR_NAMES.items() for p in POSES}
+    if not all(path.exists() for path in paths.values()):
         return None
-    frames = {"kind": "side", "walk": _load_strip(walk, size)}
-    attack = ASSET_DIR / "attack.png"
-    if attack.exists():
-        frames["attack"] = _load_strip(attack, size)
+    images = {key: pygame.image.load(str(path)).convert_alpha() for key, path in paths.items()}
+    ref_w, ref_h = images[((0, 1), "stand")].get_size()
+    ratio = min(box[0] / ref_w, box[1] / ref_h)
+
+    def fit(img):
+        return pygame.transform.smoothscale(
+            img, (max(1, round(img.get_width() * ratio)), max(1, round(img.get_height() * ratio))))
+
+    frames = {"kind": "pose"}
+    for (direction, pose), img in images.items():
+        frames.setdefault(direction, {})[pose] = fit(img)
+    spawn = ASSET_DIR / "zombie_spawn.png"
+    frames["spawn"] = fit(pygame.image.load(str(spawn)).convert_alpha()) if spawn.exists() else None
     return frames
 
 
