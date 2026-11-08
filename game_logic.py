@@ -6,7 +6,7 @@ class GameState:
 
         # Round system
         self.round_number = 1
-        self.max_rounds = 8
+        self.max_rounds = 12
 
         # Action system
         self.max_actions = 2

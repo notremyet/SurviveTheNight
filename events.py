@@ -157,11 +157,8 @@ class EventSystem:
             else self.alarm_cell
         )
 
-        self.zombies.make_noise(
-            cell,
-            2,
-            "alarm"
-        )
+        # The main game queues this event sound for the next Zombie Turn.
+        # Do not inject it directly here: this event occurs AFTER the zombie phase.
 
         return {
             "success": True,

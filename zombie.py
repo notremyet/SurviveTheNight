@@ -356,9 +356,17 @@ class ZombieManager:
                 # Lost the player: go and check where they were last seen.
                 self._set_state(z, INVESTIGATE, z.target, events)
 
-        # 2) act
+        # 2) act. Noise strength is also the investigation movement budget.
+        # A loud sound can pull a zombie several tiles along a legal path.
+        # Patrol and visual chase retain their independent movement rules.
         steps = {PATROL: PATROL_STEPS, INVESTIGATE: INVESTIGATE_STEPS,
                  CHASE: CHASE_STEPS}[z.state]
+        if z.state == INVESTIGATE:
+            audible = self._loudest_heard(z, heard)
+            if audible is not None:
+                steps = max(INVESTIGATE_STEPS, int(audible.loudness))
+            elif maker_target is not None and priority_noise is not None:
+                steps = max(INVESTIGATE_STEPS, int(priority_noise[1]))
         stuck = False
         for _ in range(steps):
             if z.state == CHASE and not hidden and self.board.can_step(z.cell, player_cell):

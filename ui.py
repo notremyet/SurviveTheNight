@@ -25,7 +25,7 @@ class GameUI:
         return surface.get_rect(topleft=(x, y))
 
     def draw_hud(self, screen, hp=3, max_hp=3, round_number=1,
-                 max_rounds=8, actions=2, max_actions=2, noise=0,
+                 max_rounds=12, actions=2, max_actions=2, noise=0,
                  message="Find the key and escape!", items=None, goal=None):
         # Top bar
         top = pygame.Rect(15, 10, WIDTH - 30, 65)
@@ -50,18 +50,28 @@ class GameUI:
         self.draw_text(screen, "GOAL", 155, bottom_y + 10,
                        self.small_font, self.colors["yellow"])
         goal_text = goal or "Search chests, find the key and escape through I7."
-        self.draw_text(screen, goal_text, 205, bottom_y + 10,
-                       self.small_font, self.colors["white"])
+        # Keep goal text inside its allocated area, away from END TURN.
+        def fit_text(text, font, max_width):
+            text = str(text)
+            if font.size(text)[0] <= max_width:
+                return text
+            while text and font.size(text + "...")[0] > max_width:
+                text = text[:-1]
+            return text.rstrip() + "..."
+
+        self.draw_text(screen, fit_text(goal_text, self.small_font, WIDTH - 425),
+                       205, bottom_y + 10, self.small_font, self.colors["white"])
         self.draw_text(screen, "INVENTORY", 30, bottom_y + 37,
                        self.small_font, self.colors["muted"])
         items = items or []
         item_text = "  |  ".join(str(item) for item in items[:5]) if items else "Empty"
-        self.draw_text(screen, item_text, 135, bottom_y + 37,
-                       self.small_font, self.colors["white"])
-        # Current message is deliberately short and kept within the bottom panel.
+        self.draw_text(screen, fit_text(item_text, self.small_font, 355),
+                       135, bottom_y + 37, self.small_font, self.colors["white"])
+        # Reserve the bottom-right 185 pixels for the END TURN button.
         if message:
-            msg = self.body_font.render(str(message)[:65], True, self.colors["green"])
-            screen.blit(msg, (WIDTH - msg.get_width() - 30, bottom_y + 37))
+            msg_text = fit_text(message, self.small_font, 290)
+            msg = self.small_font.render(msg_text, True, self.colors["green"])
+            screen.blit(msg, (500, bottom_y + 39))
 
     def draw_pause(self, screen, selected=0, show_instructions=False):
         shade = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)

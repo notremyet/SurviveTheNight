@@ -59,7 +59,7 @@ item_use_panel = ItemUsePanel()
 item_use_animation = ItemUseAnimation(BASE_DIR)
 inventory_open = False
 inventory_closed_for_round = False
-end_turn_button = pygame.Rect(WIDTH - 182, HEIGHT - 57, 158, 35)
+end_turn_button = pygame.Rect(WIDTH - 185, HEIGHT - 67, 160, 38)
 screen_manager = ScreenManager(screen)
 game = None
 end_screen_shown = False
@@ -81,6 +81,9 @@ DICE_RESULT_HOLD = 1500
 EXIT_CELL = "I7"
 hide_animation_until = 0
 pending_movement_noise = None
+# Event sounds persist until the next Zombie Turn; locks expire after that turn.
+pending_event_sounds = []
+temporary_event_locks = set()
 goal_hint = ""
 goal_hint_until = 0
 
@@ -102,6 +105,7 @@ ITEM_CARD_INFO = {
 def show_loot_reveal(item, source="chest", received=False):
     global loot_reveal_item, loot_reveal_until
     global loot_reveal_source, loot_reveal_received
+    global pending_event_sounds, temporary_event_locks
     loot_reveal_item = item
     loot_reveal_source = source
     loot_reveal_received = received
@@ -299,7 +303,7 @@ def reset_game():
     """Create a fresh game world whenever START GAME is selected."""
     global board, player, furniture, interactables, actions, zombies
     global inventory, loot_system, search_system, escaped
-    global round_noise, noise_origin, game, end_screen_shown
+    global round_noise, noise_origin, game, end_screen_shown, event_noise_total
     global hide_animation_until, pending_movement_noise, paused, pause_selected, pause_instructions
     global goal_hint, goal_hint_until, loot_reveal_item, loot_reveal_until
     global event_phase, event_result, event_reveal_until, event_system, pending_event_loot
@@ -308,6 +312,8 @@ def reset_game():
     global loot_reveal_source, loot_reveal_received
 
     board = Board()
+    pending_event_sounds = []
+    temporary_event_locks = set()
     player = Player(start_cell="B2")
     furniture = FurnitureManager(board, reserved={player.cell, EXIT_CELL})
     interactables = InteractableManager()
@@ -331,6 +337,7 @@ def reset_game():
             return None
         chosen = random.choice(available_doors)
         board.locked.add(chosen)
+        temporary_event_locks.add(chosen)
         return chosen
 
     event_system = EventSystem(
@@ -342,6 +349,7 @@ def reset_game():
 
     escaped = False
     round_noise = 0
+    event_noise_total = 0
     noise_origin = player.cell
     game = GameState()
     end_screen_shown = False
@@ -779,8 +787,13 @@ while running:
             and event_phase == "player" and inventory_closed_for_round):
         # One accumulated sound value for the entire Player Turn.
         # Normal turns use it from the last noisy action's location.
-        if round_noise > 0:
-            zombies.make_noise(noise_origin, round_noise, "player_actions")
+        # Each event sound retains its own origin even if the player moves later.
+        for sound_cell, loudness in pending_event_sounds:
+            zombies.make_noise(sound_cell, loudness, "event_alarm")
+        pending_event_sounds.clear()
+        action_noise = max(0, round_noise - event_noise_total)
+        if action_noise > 0:
+            zombies.make_noise(noise_origin, action_noise, "player_actions")
 
         # A Remote redirects THIS SAME sound value to the planted maker.
         # Its priority is resolved by the Zombie AI (not by sound strength).
@@ -799,6 +812,11 @@ while running:
             priority_noise=primary,
         )
         inventory.finish_zombie_turn()  # remove used makers
+        # Event locks last exactly until the following Zombie Turn finishes.
+        for locked_edge in temporary_event_locks:
+            board.locked.discard(locked_edge)
+        temporary_event_locks.clear()
+        event_noise_total = 0
         round_noise = 0                 # next round starts quiet
         noise_origin = player.cell
         total_damage = sum(ev.damage for ev in combat_events if ev.kind == "attack")
@@ -811,7 +829,7 @@ while running:
         elif any(ev.kind == "heard" for ev in combat_events):
             interactables.message = "Something heard that..."
         # Complete the round through GameState, then reset ActionSystem only
-        # if the game is still active. This also enforces the 8-round limit.
+        # if the game is still active. This also enforces the 12-round limit.
         if player.is_dead:
             # Keep the map visible briefly after the fatal zombie hit.
             event_phase = "death_pause"
@@ -863,6 +881,15 @@ while running:
             interactables.hidden_in is not None,
             dice=rolled_dice_value,
         )
+        # The alarm happens after the zombie phase. Carry its +2 sound into
+        # the following player round, show it on the HUD, and let zombies
+        # hear it when that round ends (instead of discarding it immediately).
+        if event_result.get("dice") == 6 and event_result.get("success", True):
+            event_loudness = int(event_result.get("noise", 0))
+            event_cell = event_result.get("cell", player.cell)
+            round_noise += event_loudness
+            event_noise_total += event_loudness
+            pending_event_sounds.append((event_cell, event_loudness))
         if event_result.get("dice") == 2:
             extra_damage = sum(
                 ev.damage for ev in event_result.get("combat_events", [])
@@ -915,7 +942,7 @@ while running:
                 inventory_closed_for_round = False
                 # Unused Remotes remain in the bag. The player may press I
                 # before taking actions, but there is no forced popup.
-            round_noise = 0
+            # Keep any event-generated noise for the next player round.
 
     if (event_phase == "event_loot"
             and pygame.time.get_ticks() >= loot_reveal_until):
@@ -930,7 +957,7 @@ while running:
             actions.next_round()
             inventory_closed_for_round = False
             # Remote stays available via I; never open the bag automatically.
-        round_noise = 0
+        # Keep any event-generated noise for the next player round.
 
     if screen_manager.current_screen == "game" and game is not None:
         screen.fill((20, 18, 28))
