@@ -23,6 +23,8 @@ from ui import GameUI
 from game_logic import GameState
 from screen_manager import ScreenManager
 from events import EventSystem
+from item_use_ui import ItemUsePanel
+from item_animations import ItemUseAnimation
 
 pygame.init()
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
@@ -53,6 +55,10 @@ if lock_path.exists():
     lock_overlay = pygame.image.load(str(lock_path)).convert_alpha()
 
 ui = GameUI()
+item_use_panel = ItemUsePanel()
+item_use_animation = ItemUseAnimation(BASE_DIR)
+inventory_open = False
+inventory_closed_for_round = False
 screen_manager = ScreenManager(screen)
 game = None
 end_screen_shown = False
@@ -285,6 +291,7 @@ def reset_game():
     global goal_hint, goal_hint_until, loot_reveal_item, loot_reveal_until
     global event_phase, event_result, event_reveal_until, event_system, pending_event_loot
     global dice_roll_started, dice_result_until, rolled_dice_value
+    global inventory_open, inventory_closed_for_round
 
     board = Board()
     player = Player(start_cell="B2")
@@ -295,6 +302,10 @@ def reset_game():
     # Keep the full spawn table available to Event 1, while starting with one zombie.
     zombies.spawns = DEFAULT_SPAWNS
     inventory = Inventory()
+    inventory_open = False
+    inventory_closed_for_round = False
+    item_use_panel.message = "Choose an item to use, then Close Bag."
+    item_use_animation.reset()
     loot_system = LootSystem()
     search_system = SearchSystem(loot_system, inventory)
 
@@ -341,6 +352,48 @@ def activate_remote(remote_id):
     if player.is_dead or player.is_moving or zombies.busy:
         return False
     return inventory.activate_noise_maker(remote_id)
+
+
+def use_inventory_slot(index):
+    """The item-use rules; a future UI can call this without changing Inventory."""
+    if not inventory_open or player.is_dead or player.is_moving:
+        return
+    owned = inventory.get_items()
+    if not 0 <= index < len(owned):
+        return
+    item = owned[index]
+    if item == ItemType.MEDKIT:
+        if inventory.use_medkit_on_player(player):
+            item_use_animation.start("medkit")
+            item_use_panel.message = "Medkit used: +1 HP."
+        else:
+            item_use_panel.message = "Cannot use Medkit: HP already full."
+    elif item == ItemType.NOISE_MAKER:
+        remote_id = place_noise_maker()
+        if remote_id is None:
+            item_use_panel.message = "Cannot place Noise Maker right now."
+        else:
+            player.play_action("noise", duration_ms=550)
+            item_use_animation.start("place_noise_maker")
+            item_use_panel.message = f"Noise Maker placed at {player.cell}. Remote {remote_id} ready."
+    elif isinstance(item, dict) and item.get("type") == "remote":
+        if activate_remote(item.get("id")):
+            player.play_action("noise", duration_ms=550)  # Fallback until remote artwork exists.
+            item_use_animation.start("activate_remote")
+            item_use_panel.message = "Remote activated. Zombie hears it this turn."
+        else:
+            item_use_panel.message = "This Remote cannot be activated."
+    elif item == ItemType.KEY:
+        item_use_panel.message = "Keep the Key and press E at exit I7."
+
+
+def close_inventory_phase():
+    global inventory_open, inventory_closed_for_round
+    inventory_open = False
+    # Closing the bag before both actions are used simply resumes Player Turn.
+    # After the second action, Close Bag confirms the end of the Player Turn.
+    if actions.round_finished():
+        inventory_closed_for_round = True
 
 
 def sync_game_state():
@@ -412,6 +465,22 @@ while running:
         if event.type == pygame.QUIT:
             running = False
 
+        elif (screen_manager.current_screen == "game" and game is not None
+              and game.status == "playing" and inventory_open and not paused):
+            # Modal takes priority over movement, chest search and pause hotkeys.
+            if event.type == pygame.KEYDOWN:
+                if event.key in (pygame.K_RETURN, pygame.K_SPACE):
+                    close_inventory_phase()
+                elif pygame.K_1 <= event.key <= pygame.K_9:
+                    use_inventory_slot(event.key - pygame.K_1)
+            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                picked = item_use_panel.hit_test(event.pos, len(inventory.get_items()))
+                if picked == "close":
+                    close_inventory_phase()
+                elif isinstance(picked, int):
+                    use_inventory_slot(picked)
+            continue
+
         elif screen_manager.current_screen == "game" and game is not None and game.status == "playing" and event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
             paused = not paused
             pause_instructions = False
@@ -479,16 +548,13 @@ while running:
                 continue
 
             if event.key == pygame.K_i:
-                # Existing text-based Inventory output. UI is owned by person 4.
-                current_items = inventory.get_items()
-                print("\n=== INVENTORY ===")
-                if not current_items:
-                    print("Empty")
-                else:
-                    for item in current_items:
-                        print(get_item_name(item) if not isinstance(item, dict)
-                              else f"Remote {item.get('id', '?')}")
-                print("=================\n")
+                # Item use is free throughout Player Turn: before, between, and
+                # after the two actions, until Close Bag ends the turn.
+                if (not player.is_moving and not inventory_closed_for_round
+                        and pygame.time.get_ticks() >= loot_reveal_until):
+                    inventory_open = True
+                    item_use_panel.message = "Use an item (free), or Close Bag to resume."
+                continue
 
             elif event.key == pygame.K_e and not player.is_moving:
                 if interactables.hidden_in is not None:
@@ -600,11 +666,21 @@ while running:
         # Walking adds no noise and does not reset round_noise.
         pending_movement_noise = None
 
+    # After the second action, reopen the bag even if it was used earlier.
+    # Only closing it at 2/2 actions can start Zombie Turn.
+    if (game is not None and not paused and game.status == "playing"
+            and event_phase == "player" and not inventory_open
+            and not inventory_closed_for_round and actions.round_finished()
+            and not player.is_moving and not zombies.busy
+            and pygame.time.get_ticks() >= loot_reveal_until):
+        inventory_open = True
+        item_use_panel.message = "Select an item to use (free), then Close Bag."
+
     # Player (two actions) -> Zombie Turn -> next Player round.
     # Game Master events will be inserted between the last two steps later.
     if (game is not None and not paused and game.status == "playing" and not escaped and not player.is_dead
             and not player.is_moving and not zombies.busy and actions.round_finished()
-            and event_phase == "player"):
+            and event_phase == "player" and inventory_closed_for_round):
         # One accumulated sound value for the entire Player Turn.
         # Normal turns use it from the last noisy action's location.
         if round_noise > 0:
@@ -729,6 +805,11 @@ while running:
                     end_screen_shown = True
             else:
                 actions.next_round()
+                inventory_closed_for_round = False
+                # Let the player activate a deferred Remote before taking actions.
+                if any(not m["activated"] for m in inventory.get_placed_noise_makers()):
+                    inventory_open = True
+                    item_use_panel.message = "Remote ready: activate now or Close Bag to play."
             round_noise = 0
 
     if (event_phase == "event_loot"
@@ -742,6 +823,10 @@ while running:
                 end_screen_shown = True
         else:
             actions.next_round()
+            inventory_closed_for_round = False
+            if any(not m["activated"] for m in inventory.get_placed_noise_makers()):
+                inventory_open = True
+                item_use_panel.message = "Remote ready: activate now or Close Bag to play."
         round_noise = 0
 
     if screen_manager.current_screen == "game" and game is not None:
@@ -816,6 +901,11 @@ while running:
             draw_dice_modal(screen, rolling=False, face=rolled_dice_value)
         elif event_phase == "reveal":
             draw_event_reveal(screen)
+
+        if inventory_open and game.status == "playing" and not paused:
+            item_use_panel.draw(screen, inventory.get_items(), player.hp, player.max_hp,
+                                player.cell, round_noise)
+            item_use_animation.draw(screen)
 
         if game.status in ("won", "lost"):
             screen_manager.draw()
