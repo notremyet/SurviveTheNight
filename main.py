@@ -505,6 +505,22 @@ while running:
         if event.type == pygame.QUIT:
             running = False
 
+        # Chest loot reveal is a modal: mouse click or Enter closes it
+        # immediately. Do not pass the same input through to movement,
+        # item use, or End Turn. The next action needs a NEW input.
+        elif (screen_manager.current_screen == "game" and game is not None
+              and game.status == "playing" and not paused
+              and loot_reveal_source == "chest"
+              and loot_reveal_item is not None
+              and pygame.time.get_ticks() < loot_reveal_until):
+            if ((event.type == pygame.MOUSEBUTTONDOWN and event.button == 1)
+                    or (event.type == pygame.KEYDOWN and event.key in (
+                        pygame.K_RETURN, pygame.K_KP_ENTER))):
+                loot_reveal_until = 0
+                loot_reveal_item = None
+            # Ignore other controls until the loot card is dismissed.
+            continue
+
         elif (screen_manager.current_screen == "game" and game is not None
               and game.status == "playing" and inventory_open and not paused):
             # Modal takes priority over movement, chest search and pause hotkeys.
@@ -697,8 +713,11 @@ while running:
                 loot_reveal_until = pygame.time.get_ticks()
                 continue
             if event_phase == "roll" and game is not None and game.status == "playing":
-                dice_rect = pygame.Rect(WIDTH//2-82, HEIGHT//2-82, 164, 164)
-                if dice_rect.collidepoint(event.pos):
+                # The whole Game Master panel is clickable, not just the die.
+                # Match the 430 x 390 rectangle used by draw_dice_modal().
+                dice_panel = pygame.Rect((WIDTH - 430)//2, (HEIGHT - 390)//2,
+                                         430, 390)
+                if dice_panel.collidepoint(event.pos):
                     dice_roll_started = pygame.time.get_ticks()
                     event_phase = "rolling"
                 continue
