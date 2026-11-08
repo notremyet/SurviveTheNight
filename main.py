@@ -218,7 +218,7 @@ def draw_dice_modal(surface, rolling=False, face=None):
         shown_face = face if face in range(1, 7) else 1
         angle = 0
         pulse = 1.0
-        hint = f"Dice result: {shown_face}" if face else "Click the dice to roll"
+        hint = f"Dice result: {shown_face}" if face else "Click the die to roll"
 
     for px, py in pip_layout[shown_face]:
         pygame.draw.circle(
@@ -318,7 +318,8 @@ def reset_game():
     inventory = Inventory()
     inventory_open = False
     inventory_closed_for_round = False
-    item_use_panel.message = "Choose an item to use, then Close Bag."
+    item_use_panel.message = "UP/DOWN select; ENTER/SPACE use; I/ESC close."
+    item_use_panel.selected_index = 0
     item_use_animation.reset()
     loot_system = LootSystem()
     search_system = SearchSystem(loot_system, inventory)
@@ -401,6 +402,7 @@ def use_inventory_slot(index):
             item_use_panel.message = "This Remote cannot be activated."
     elif item == ItemType.KEY:
         item_use_panel.message = "Keep the Key and press E at exit I7."
+    item_use_panel.clamp_selection(len(inventory.get_items()))
 
 
 def close_inventory_phase():
@@ -429,7 +431,7 @@ def draw_end_turn_button(surface):
     pygame.draw.rect(surface, (245, 225, 152) if ready else (115, 112, 120),
                      end_turn_button, 2, border_radius=8)
     button_font = pygame.font.SysFont("arial", 16, bold=True)
-    label = "END TURN [Enter]" if ready else "END TURN (2 actions)"
+    label = "END TURN" if ready else "END TURN (2 actions)"
     rendered = button_font.render(label, True, (28, 25, 31) if ready else (200, 200, 205))
     surface.blit(rendered, rendered.get_rect(center=end_turn_button.center))
 
@@ -507,15 +509,29 @@ while running:
               and game.status == "playing" and inventory_open and not paused):
             # Modal takes priority over movement, chest search and pause hotkeys.
             if event.type == pygame.KEYDOWN:
-                if event.key in (pygame.K_RETURN, pygame.K_SPACE, pygame.K_i, pygame.K_ESCAPE):
+                if event.key in (pygame.K_i, pygame.K_ESCAPE):
                     close_inventory_phase()
-                elif pygame.K_1 <= event.key <= pygame.K_9:
-                    use_inventory_slot(event.key - pygame.K_1)
+                elif event.key in (pygame.K_UP, pygame.K_DOWN):
+                    item_use_panel.move_selection(
+                        -1 if event.key == pygame.K_UP else 1,
+                        len(inventory.get_items()),
+                    )
+                elif pygame.K_1 <= event.key <= pygame.K_4:
+                    # Optional number shortcuts select a slot; they do NOT use it.
+                    target_index = event.key - pygame.K_1
+                    if target_index < len(inventory.get_items()):
+                        item_use_panel.selected_index = target_index
+                elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
+                    # Inventory is modal: ENTER uses the selected item,
+                    # never ends the turn, rolls the die or closes the bag.
+                    if inventory.get_items():
+                        use_inventory_slot(item_use_panel.selected_index)
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 picked = item_use_panel.hit_test(event.pos, len(inventory.get_items()))
                 if picked == "close":
                     close_inventory_phase()
                 elif isinstance(picked, int):
+                    item_use_panel.selected_index = picked
                     use_inventory_slot(picked)
             continue
 
@@ -568,6 +584,20 @@ while running:
                 zombies.debug = not zombies.debug
                 continue
 
+            # ENTER performs exactly ONE step in the current Event modal.
+            # Inventory and pause are handled above and always take priority.
+            if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                if event_phase == "roll" and game.status == "playing":
+                    dice_roll_started = pygame.time.get_ticks()
+                    event_phase = "rolling"
+                    continue
+                if event_phase == "reveal":
+                    event_reveal_until = pygame.time.get_ticks()
+                    continue
+                if event_phase == "event_loot":
+                    loot_reveal_until = pygame.time.get_ticks()
+                    continue
+
             if game.status != "playing" or escaped or player.is_dead or zombies.busy or event_phase != "player":
                 continue
 
@@ -590,10 +620,11 @@ while running:
                 if (not player.is_moving and not inventory_closed_for_round
                         and pygame.time.get_ticks() >= loot_reveal_until):
                     inventory_open = True
-                    item_use_panel.message = "Use an item for free. Close Bag to resume."
+                    item_use_panel.clamp_selection(len(inventory.get_items()))
+                    item_use_panel.message = "UP/DOWN select; ENTER/SPACE use; I/ESC close."
                 continue
 
-            if event.key == pygame.K_RETURN:
+            if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
                 finish_player_turn()  # Requires 2 actions; never forces bag open.
                 continue
 
@@ -656,6 +687,15 @@ while running:
                             set_goal_hint("Nothing to interact with here. Move onto a chest, wardrobe, or exit.")
 
         elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            if event_phase == "reveal":
+                # Restore the earlier mouse behavior: click anywhere on the event
+                # card (or the screen), not a newly added Continue button.
+                event_reveal_until = pygame.time.get_ticks()
+                continue
+            if event_phase == "event_loot":
+                # Likewise, dismiss the Event 5 reward without a separate button.
+                loot_reveal_until = pygame.time.get_ticks()
+                continue
             if event_phase == "roll" and game is not None and game.status == "playing":
                 dice_rect = pygame.Rect(WIDTH//2-82, HEIGHT//2-82, 164, 164)
                 if dice_rect.collidepoint(event.pos):
