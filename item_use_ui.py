@@ -1,7 +1,7 @@
 """Item-use panel, deliberately separate from the team's ui.py.
 
-The player can open this panel during Player Turn using I, and it also
-opens automatically after the second action.
+The player opens the bag on demand using I during Player Turn.
+It never opens automatically when actions are exhausted.
 """
 import pygame
 
@@ -74,4 +74,4 @@ class ItemUsePanel:
         pygame.draw.rect(surface, (205, 167, 63), self.close_rect, border_radius=8)
         label("CLOSE BAG", self.close_rect.x+24, self.close_rect.y+9,
               (22, 22, 30), self.font)
-        label("I: OPEN BAG     ENTER / SPACE: CLOSE", box.x+28, box.bottom-48, (190, 190, 205))
+        label("I / ENTER / SPACE: CLOSE BAG", box.x+28, box.bottom-48, (190, 190, 205))

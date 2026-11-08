@@ -59,6 +59,7 @@ item_use_panel = ItemUsePanel()
 item_use_animation = ItemUseAnimation(BASE_DIR)
 inventory_open = False
 inventory_closed_for_round = False
+end_turn_button = pygame.Rect(WIDTH - 182, HEIGHT - 57, 158, 35)
 screen_manager = ScreenManager(screen)
 game = None
 end_screen_shown = False
@@ -87,6 +88,8 @@ goal_hint_until = 0
 loot_reveal_item = None
 loot_reveal_until = 0
 pending_event_loot = None
+loot_reveal_source = "chest"
+loot_reveal_received = False
 LOOT_REVEAL_DURATION = 3800
 
 ITEM_CARD_INFO = {
@@ -96,9 +99,12 @@ ITEM_CARD_INFO = {
     ItemType.NOTHING: ("Nothing", "This chest had no useful item."),
 }
 
-def show_loot_reveal(item):
+def show_loot_reveal(item, source="chest", received=False):
     global loot_reveal_item, loot_reveal_until
+    global loot_reveal_source, loot_reveal_received
     loot_reveal_item = item
+    loot_reveal_source = source
+    loot_reveal_received = received
     loot_reveal_until = pygame.time.get_ticks() + LOOT_REVEAL_DURATION
 
 def draw_loot_reveal(surface):
@@ -108,6 +114,13 @@ def draw_loot_reveal(surface):
     title, description = ITEM_CARD_INFO.get(
         loot_reveal_item, ("Unknown Item", "You found an item.")
     )
+    if loot_reveal_source == "event":
+        if loot_reveal_item == ItemType.NOTHING:
+            description = "Nothing drawn. No item added to inventory."
+        elif loot_reveal_received:
+            description = "Added to your inventory. Press I to check."
+        else:
+            description = "Item was not added to inventory."
     asset_names = {
         ItemType.KEY: "key.png",
         ItemType.MEDKIT: "medkit.png",
@@ -130,7 +143,7 @@ def draw_loot_reveal(surface):
 
     title_font = pygame.font.SysFont("arial", 30, bold=True)
     body_font = pygame.font.SysFont("arial", 19)
-    heading = title_font.render("CHEST SEARCH", True, (255, 217, 65))
+    heading = title_font.render("EVENT REWARD" if loot_reveal_source == "event" else "CHEST SEARCH", True, (255, 217, 65))
     surface.blit(heading, heading.get_rect(center=(WIDTH//2, card.y+35)))
 
     try:
@@ -292,6 +305,7 @@ def reset_game():
     global event_phase, event_result, event_reveal_until, event_system, pending_event_loot
     global dice_roll_started, dice_result_until, rolled_dice_value
     global inventory_open, inventory_closed_for_round
+    global loot_reveal_source, loot_reveal_received
 
     board = Board()
     player = Player(start_cell="B2")
@@ -337,6 +351,8 @@ def reset_game():
     loot_reveal_item = None
     loot_reveal_until = 0
     pending_event_loot = None
+    loot_reveal_source = "chest"
+    loot_reveal_received = False
     paused = False
     pause_selected = 0
     pause_instructions = False
@@ -388,12 +404,34 @@ def use_inventory_slot(index):
 
 
 def close_inventory_phase():
-    global inventory_open, inventory_closed_for_round
+    global inventory_open
+    # Close Bag never ends the turn; the player decides when to press End Turn.
     inventory_open = False
-    # Closing the bag before both actions are used simply resumes Player Turn.
-    # After the second action, Close Bag confirms the end of the Player Turn.
-    if actions.round_finished():
+
+
+def finish_player_turn():
+    global inventory_closed_for_round
+    if (not inventory_open and event_phase == "player" and game is not None
+            and game.status == "playing" and not player.is_dead
+            and not player.is_moving and not zombies.busy
+            and actions.round_finished()):
         inventory_closed_for_round = True
+        return True
+    return False
+
+
+def draw_end_turn_button(surface):
+    if event_phase != "player" or game is None or game.status != "playing":
+        return
+    ready = actions.round_finished() and not player.is_moving and not inventory_open
+    fill = (219, 173, 67) if ready else (65, 64, 75)
+    pygame.draw.rect(surface, fill, end_turn_button, border_radius=8)
+    pygame.draw.rect(surface, (245, 225, 152) if ready else (115, 112, 120),
+                     end_turn_button, 2, border_radius=8)
+    button_font = pygame.font.SysFont("arial", 16, bold=True)
+    label = "END TURN [Enter]" if ready else "END TURN (2 actions)"
+    rendered = button_font.render(label, True, (28, 25, 31) if ready else (200, 200, 205))
+    surface.blit(rendered, rendered.get_rect(center=end_turn_button.center))
 
 
 def sync_game_state():
@@ -469,7 +507,7 @@ while running:
               and game.status == "playing" and inventory_open and not paused):
             # Modal takes priority over movement, chest search and pause hotkeys.
             if event.type == pygame.KEYDOWN:
-                if event.key in (pygame.K_RETURN, pygame.K_SPACE):
+                if event.key in (pygame.K_RETURN, pygame.K_SPACE, pygame.K_i, pygame.K_ESCAPE):
                     close_inventory_phase()
                 elif pygame.K_1 <= event.key <= pygame.K_9:
                     use_inventory_slot(event.key - pygame.K_1)
@@ -548,12 +586,15 @@ while running:
                 continue
 
             if event.key == pygame.K_i:
-                # Item use is free throughout Player Turn: before, between, and
-                # after the two actions, until Close Bag ends the turn.
+                # Bag opens only on request, before/between/after the two actions.
                 if (not player.is_moving and not inventory_closed_for_round
                         and pygame.time.get_ticks() >= loot_reveal_until):
                     inventory_open = True
-                    item_use_panel.message = "Use an item (free), or Close Bag to resume."
+                    item_use_panel.message = "Use an item for free. Close Bag to resume."
+                continue
+
+            if event.key == pygame.K_RETURN:
+                finish_player_turn()  # Requires 2 actions; never forces bag open.
                 continue
 
             elif event.key == pygame.K_e and not player.is_moving:
@@ -625,6 +666,9 @@ while running:
                 continue
             if game.status != "playing" or escaped or player.is_dead or zombies.busy:
                 continue
+            if end_turn_button.collidepoint(event.pos):
+                finish_player_turn()
+                continue
             if interactables.hidden_in is not None:
                 interactables.message = "Press E to leave the wardrobe first"
             elif player.is_moving:
@@ -666,15 +710,8 @@ while running:
         # Walking adds no noise and does not reset round_noise.
         pending_movement_noise = None
 
-    # After the second action, reopen the bag even if it was used earlier.
-    # Only closing it at 2/2 actions can start Zombie Turn.
-    if (game is not None and not paused and game.status == "playing"
-            and event_phase == "player" and not inventory_open
-            and not inventory_closed_for_round and actions.round_finished()
-            and not player.is_moving and not zombies.busy
-            and pygame.time.get_ticks() >= loot_reveal_until):
-        inventory_open = True
-        item_use_panel.message = "Select an item to use (free), then Close Bag."
+    # The bag never opens automatically. The player presses I at any point;
+    # after two actions they can use items, then press Enter / END TURN.
 
     # Player (two actions) -> Zombie Turn -> next Player round.
     # Game Master events will be inserted between the last two steps later.
@@ -777,8 +814,18 @@ while running:
         elif event_result.get("dice") == 5:
             item_result = event_result.get("item_result") or {}
             found = item_result.get("item")
-            if found is not None:
-                pending_event_loot = found
+            received = bool(item_result.get("added_to_inventory", False))
+            if found is None:
+                event_result["message"] = "Random Item: supply pool exhausted."
+            elif found == ItemType.NOTHING:
+                event_result["message"] = "Random Item: Nothing (no item added)."
+                pending_event_loot = (found, False)
+            else:
+                event_result["message"] = (
+                    f"Random Item: {get_item_name(found)} "
+                    + ("ADDED TO INVENTORY" if received else "NOT ADDED")
+                )
+                pending_event_loot = (found, received)
 
         event_phase = "dice_result"
         dice_result_until = pygame.time.get_ticks() + DICE_RESULT_HOLD
@@ -793,7 +840,8 @@ while running:
         rolled_dice_value = None
         if pending_event_loot is not None:
             # Give the event card its own screen time, then reveal its reward.
-            show_loot_reveal(pending_event_loot)
+            reward_item, reward_received = pending_event_loot
+            show_loot_reveal(reward_item, source="event", received=reward_received)
             pending_event_loot = None
             event_phase = "event_loot"
         else:
@@ -806,10 +854,8 @@ while running:
             else:
                 actions.next_round()
                 inventory_closed_for_round = False
-                # Let the player activate a deferred Remote before taking actions.
-                if any(not m["activated"] for m in inventory.get_placed_noise_makers()):
-                    inventory_open = True
-                    item_use_panel.message = "Remote ready: activate now or Close Bag to play."
+                # Unused Remotes remain in the bag. The player may press I
+                # before taking actions, but there is no forced popup.
             round_noise = 0
 
     if (event_phase == "event_loot"
@@ -824,9 +870,7 @@ while running:
         else:
             actions.next_round()
             inventory_closed_for_round = False
-            if any(not m["activated"] for m in inventory.get_placed_noise_makers()):
-                inventory_open = True
-                item_use_panel.message = "Remote ready: activate now or Close Bag to play."
+            # Remote stays available via I; never open the bag automatically.
         round_noise = 0
 
     if screen_manager.current_screen == "game" and game is not None:
@@ -882,6 +926,9 @@ while running:
             items=visible_items,
             goal=current_goal,
         )
+        # Draw on top of the existing HUD without changing teammates' ui.py.
+        if not paused and event_phase == "player" and game.status == "playing":
+            draw_end_turn_button(screen)
 
         loot_popup_active = (
             loot_reveal_item is not None

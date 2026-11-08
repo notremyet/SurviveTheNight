@@ -50,12 +50,17 @@ class SearchSystem:
         item = self.loot_system.random_loot()
 
         if item is None:
-            return {"item": None, "message": "Supply exhausted"}
+            return {"item": None, "message": "Supply exhausted", "added_to_inventory": False}
 
+        added = False
         if item != ItemType.NOTHING:
-            self.inventory.add_item(item)
+            added = self.inventory.add_item(item)
 
-        return {"item": item, "message": get_item_name(item)}
+        return {
+            "item": item,
+            "message": get_item_name(item),
+            "added_to_inventory": added,
+        }
 
     def search_chest(self, interaction_result):
         if interaction_result != "chest_open":
