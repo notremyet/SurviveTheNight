@@ -18,16 +18,13 @@ class ItemUsePanel:
         self.close_rect = pygame.Rect(0, 0, 1, 1)
 
     def clamp_selection(self, count):
-        if count <= 0:
-            self.selected_index = 0
-        else:
-            self.selected_index = min(self.selected_index, count - 1)
+        # Index 0..count-1 are item rows; index count is CLOSE BAG.
+        # With an empty bag, CLOSE BAG is selected immediately.
+        self.selected_index = max(0, min(self.selected_index, count))
 
     def move_selection(self, direction, count):
-        if count <= 0:
-            self.selected_index = 0
-            return
-        self.selected_index = (self.selected_index + direction) % count
+        # Do not wrap from the last item or CLOSE BAG to the first item.
+        self.selected_index = max(0, min(self.selected_index + direction, count))
 
     def hit_test(self, pos, count):
         if self.close_rect.collidepoint(pos):
@@ -57,7 +54,7 @@ class ItemUsePanel:
         label("INVENTORY - USE ITEMS", box.x+28, box.y+22, (255, 221, 118), self.font)
         label(f"HP {hp}/{max_hp}    Cell {player_cell}    Noise {noise}",
               box.x+28, box.y+58)
-        label("UP/DOWN: Select   ENTER/SPACE: Use   Mouse: Click to use",
+        label("UP/DOWN: Select   ENTER: Use / Close   Mouse: Click",
               box.x+28, box.y+92, (183, 186, 198))
 
         self.rows = []
@@ -77,9 +74,9 @@ class ItemUsePanel:
             elif item == ItemType.MEDKIT:
                 title = "Medkit - HEAL +1 HP"
             elif item == ItemType.NOISE_MAKER:
-                title = "Noise Maker - PLACE HERE (becomes Remote)"
+                title = "Noise Maker - PLACE HERE"
             elif item == ItemType.KEY:
-                title = "Key - HOLD for exit (not consumable)"
+                title = "Key - Unlocks Exit"
             else:
                 title = get_item_name(item)
             label(f"{'>' if selected else ' '} {i+1}. {title}", rect.x+12, rect.y+6)
@@ -89,7 +86,11 @@ class ItemUsePanel:
         msg_y = box.bottom - 98
         label(self.message[:75], box.x+28, msg_y, (168, 219, 163))
         self.close_rect = pygame.Rect(box.right-194, box.bottom-60, 166, 43)
-        pygame.draw.rect(surface, (205, 167, 63), self.close_rect, border_radius=8)
+        close_selected = self.selected_index == len(items)
+        pygame.draw.rect(surface, (247, 204, 92) if close_selected else (205, 167, 63),
+                         self.close_rect, border_radius=8)
+        if close_selected:
+            pygame.draw.rect(surface, (255, 247, 203), self.close_rect, 3, border_radius=8)
         label("CLOSE BAG", self.close_rect.x+24, self.close_rect.y+9,
               (22, 22, 30), self.font)
         label("I / ESC: CLOSE BAG", box.x+28, box.bottom-48, (190, 190, 205))

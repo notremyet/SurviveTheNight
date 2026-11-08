@@ -41,6 +41,28 @@ BASE_DIR = Path(__file__).resolve().parent
 house_image = pygame.image.load(str(BASE_DIR / "assets" / "house_map.png")).convert()
 house_image = pygame.transform.scale(house_image, (MAP_WIDTH, MAP_HEIGHT))
 
+# Optional artwork for Noise Makers placed directly on the board.
+# Images can be added later without editing code again.
+NOISE_MAKER_IMAGES = {}
+for state, name in (("placed", "noise_maker_placed.png"),
+                    ("active", "noise_maker_active.png")):
+    path = BASE_DIR / "assets" / "interactables" / name
+    if path.exists():
+        image = pygame.image.load(str(path)).convert_alpha()
+        # Crop the transparent margins, not the artwork itself. Some supplied PNGs
+        # have a large transparent canvas; scaling that canvas shrinks the device.
+        visible_area = image.get_bounding_rect(min_alpha=8)
+        if visible_area.width == 0 or visible_area.height == 0:
+            continue
+        image = image.subsurface(visible_area).copy()
+        # Fit inside ONE map tile while preserving the original aspect ratio.
+        max_side = max(12, int(min(TILE_WIDTH, TILE_HEIGHT) * 0.64))
+        ratio = min(max_side / image.get_width(), max_side / image.get_height())
+        width = max(1, round(image.get_width() * ratio))
+        height = max(1, round(image.get_height() * ratio))
+        NOISE_MAKER_IMAGES[state] = pygame.transform.smoothscale(image, (width, height))
+
+
 # Game Master event artwork and locked-door overlay.
 # Initialise these containers BEFORE loading the image assets.
 event_card_images = {}
@@ -60,6 +82,9 @@ item_use_animation = ItemUseAnimation(BASE_DIR)
 inventory_open = False
 inventory_closed_for_round = False
 end_turn_button = pygame.Rect(WIDTH - 185, HEIGHT - 67, 160, 38)
+# The INVENTORY label is drawn by ui.GameUI in the bottom HUD.
+# Match its original position without modifying the teammate's ui.py.
+inventory_hud_button = pygame.Rect(24, HEIGHT - 82 + 31, 105, 30)
 screen_manager = ScreenManager(screen)
 game = None
 end_screen_shown = False
@@ -81,9 +106,10 @@ DICE_RESULT_HOLD = 1500
 EXIT_CELL = "I7"
 hide_animation_until = 0
 pending_movement_noise = None
-# Event sounds persist until the next Zombie Turn; locks expire after that turn.
+# Alarm Event 6 is heard in the following Zombie Turn.
+# Event 3 doors stay locked through TWO subsequent Player/Zombie turns.
 pending_event_sounds = []
-temporary_event_locks = set()
+temporary_event_locks = {}  # door edge -> remaining Zombie Turns (2, then 1)
 goal_hint = ""
 goal_hint_until = 0
 
@@ -286,7 +312,11 @@ def draw_locked_door_overlays(surface):
         return
     size = max(24, int(TILE_WIDTH * 0.42))
     sprite = pygame.transform.smoothscale(lock_overlay, (size, size))
-    for a, b in board.locked:
+    # Event 3 artwork follows its active timer, never a stale lock/image.
+    for locked_edge, remaining_turns in temporary_event_locks.items():
+        if remaining_turns <= 0 or locked_edge not in board.locked:
+            continue
+        a, b = tuple(locked_edge)
         ax, ay = cell_to_xy(a)
         bx, by = cell_to_xy(b)
         center = (MAP_X + (ax+bx+1)*TILE_WIDTH//2,
@@ -310,10 +340,11 @@ def reset_game():
     global dice_roll_started, dice_result_until, rolled_dice_value
     global inventory_open, inventory_closed_for_round
     global loot_reveal_source, loot_reveal_received
+    global pending_event_sounds, temporary_event_locks
 
     board = Board()
     pending_event_sounds = []
-    temporary_event_locks = set()
+    temporary_event_locks = {}
     player = Player(start_cell="B2")
     furniture = FurnitureManager(board, reserved={player.cell, EXIT_CELL})
     interactables = InteractableManager()
@@ -324,7 +355,7 @@ def reset_game():
     inventory = Inventory()
     inventory_open = False
     inventory_closed_for_round = False
-    item_use_panel.message = "UP/DOWN select; ENTER/SPACE use; I/ESC close."
+    item_use_panel.message = "UP/DOWN select; ENTER use/close; I/ESC close."
     item_use_panel.selected_index = 0
     item_use_animation.reset()
     loot_system = LootSystem()
@@ -337,7 +368,7 @@ def reset_game():
             return None
         chosen = random.choice(available_doors)
         board.locked.add(chosen)
-        temporary_event_locks.add(chosen)
+        temporary_event_locks[chosen] = 2  # lock for the next two full player rounds
         return chosen
 
     event_system = EventSystem(
@@ -367,9 +398,29 @@ def reset_game():
     pause_instructions = False
 
 
+def expire_event_locks_after_zombie_turn():
+    """Advance Event 3 timers after zombies act; unlock expired doors."""
+    for locked_edge, turns_left in list(temporary_event_locks.items()):
+        turns_left -= 1
+        if turns_left <= 0:
+            board.locked.discard(locked_edge)
+            del temporary_event_locks[locked_edge]
+        else:
+            temporary_event_locks[locked_edge] = turns_left
+
+
 def place_noise_maker():
     if player.is_dead or player.is_moving or zombies.busy:
         return None
+    # Chests and wardrobes are walkable, but a Noise Maker must not overlap them.
+    # Furniture is already excluded by the existing movement rules.
+    if player.cell in interactables.by_cell:
+        return None
+    # Do not stack two Noise Makers on the same tile.
+    if any(maker["cell"] == player.cell
+           for maker in inventory.get_placed_noise_makers()):
+        return None
+    # A planted Noise Maker is NOT a movement blocker for Player or Zombies.
     return inventory.place_noise_maker(player.cell)
 
 
@@ -396,7 +447,12 @@ def use_inventory_slot(index):
     elif item == ItemType.NOISE_MAKER:
         remote_id = place_noise_maker()
         if remote_id is None:
-            item_use_panel.message = "Cannot place Noise Maker right now."
+            if player.cell in interactables.by_cell:
+                item_use_panel.message = "Move off the chest or wardrobe to place Noise Maker."
+            elif any(m["cell"] == player.cell for m in inventory.get_placed_noise_makers()):
+                item_use_panel.message = "There is already a Noise Maker here."
+            else:
+                item_use_panel.message = "Cannot place Noise Maker right now."
         else:
             player.play_action("noise", duration_ms=550)
             item_use_animation.start("place_noise_maker")
@@ -465,6 +521,24 @@ def sync_game_state():
             game.lose_game("You were caught by the zombie!")
 
 
+def draw_placed_noise_makers(surface):
+    """Draw the actual planted device, not an Inventory icon.
+
+    Keep the quiet image until Zombie Turn starts; show the active image
+    during the Zombie Turn only. The device is removed after that turn.
+    """
+    if inventory is None:
+        return
+    zombie_phase = event_phase in ("zombie", "death_pause")
+    for maker in inventory.get_placed_noise_makers():
+        is_sounding = maker["activated"] and maker["used_this_turn"] and zombie_phase
+        image = NOISE_MAKER_IMAGES.get("active" if is_sounding else "placed")
+        if image is None:
+            continue
+        x, y = get_cell_center(maker["cell"])
+        surface.blit(image, image.get_rect(center=(x, y)))
+
+
 def get_cell_center(cell):
     x, y = cell_to_xy(cell)
     return (MAP_X + x * TILE_WIDTH + TILE_WIDTH // 2,
@@ -500,6 +574,119 @@ def draw_move_highlights(surface, origin):
                              layer.get_rect().inflate(-inset * 2, -inset * 2),
                              width, border_radius=5)
         surface.blit(layer, rect.topleft)
+
+
+def interact_with_current_tile():
+    """One interaction path for E and clicking the player's current tile.
+
+    Existing chest/wardrobe rules and action costs remain unchanged.
+    """
+    global escaped, end_screen_shown, hide_animation_until, round_noise, noise_origin
+    if (game is None or game.status != "playing" or escaped or player.is_dead
+            or player.is_moving or zombies.busy or inventory_open
+            or event_phase != "player"):
+        return
+    if player.cell == EXIT_CELL:
+        if inventory.has_key():
+            escaped = True
+            game.win_game()
+            interactables.message = "Escaped!"
+            if not end_screen_shown:
+                screen_manager.show_victory("You found the key and escaped!")
+                end_screen_shown = True
+        else:
+            # Keep the older keyboard-E feedback; no E prompt is shown without Key.
+            interactables.message = "Exit locked: Key required"
+            set_goal_hint("The exit is locked. Search the chests and find the key first.")
+        return
+    if interactables.hidden_in is not None:
+        result = interactables.interact(player.cell)
+        if result == "leave":
+            hide_animation_until = 0
+            player.play_action("hide", duration_ms=450)
+            set_goal_hint("You left the wardrobe. Keep moving toward the exit.")
+    else:
+        obj = interactables.by_cell.get(player.cell)
+
+        # Give clear feedback when the player tries to reuse a searched chest.
+        if obj is not None and obj.kind == "chest" and obj.opened:
+            interactables.message = "This chest has already been searched."
+            set_goal_hint("This chest has already been searched. Try another chest.")
+            return
+
+        needs_action = (obj is not None and
+                        (obj.kind == "wardrobe" or not obj.opened))
+        if needs_action and not actions.can_act():
+            interactables.message = "No actions remaining"
+            set_goal_hint("You have used all actions this turn. Wait for your next turn.")
+        else:
+            result = interactables.interact(player.cell)
+            if result == "chest_open":
+                actions.spend("Search")
+                player.play_action("search", duration_ms=650)
+                round_noise += 1
+                noise_origin = player.cell
+                loot_result = search_system.search_chest(result)
+                if loot_result is not None:
+                    found_item = loot_result.get("item")
+                    loot_message = loot_result.get("message", "You found an item.")
+                    interactables.message = "Chest opened - " + loot_message
+                    if found_item is not None:
+                        show_loot_reveal(found_item)
+                        item_title = ITEM_CARD_INFO.get(found_item, (loot_message, ""))[0]
+                        if found_item == ItemType.NOTHING:
+                            set_goal_hint("This chest had nothing useful inside.")
+                        else:
+                            set_goal_hint("You found a " + item_title + "!")
+                    else:
+                        set_goal_hint("The supplies have been exhausted.")
+                    print("Chest loot:", loot_message)
+                else:
+                    set_goal_hint("This chest is empty. Search another chest.")
+            elif result == "chest_already_open":
+                interactables.message = "Chest already opened"
+                set_goal_hint("This chest has already been searched. Try another chest.")
+            elif result == "hide":
+                actions.spend("Hide")
+                player.play_action("hide", duration_ms=550)
+                hide_animation_until = pygame.time.get_ticks() + 550
+                set_goal_hint("You are hiding. Press E again to leave the wardrobe.")
+            elif result == "leave":
+                set_goal_hint("You left the wardrobe.")
+            elif result is None:
+                set_goal_hint("Nothing to interact with here. Move onto a chest, wardrobe, or exit.")
+
+
+def should_show_interact_prompt():
+    """Only prompt for an action available on the tile the player stands on."""
+    if (game is None or game.status != "playing" or paused or inventory_open
+            or event_phase != "player" or player.is_dead or player.is_moving
+            or zombies.busy or pygame.time.get_ticks() < loot_reveal_until):
+        return False
+    if player.cell == EXIT_CELL:
+        return inventory.has_key()
+    if interactables.hidden_in is not None:
+        return True  # E / click to leave wardrobe even with 0 actions.
+    obj = interactables.by_cell.get(player.cell)
+    return (obj is not None and
+            (obj.kind == "wardrobe" or (obj.kind == "chest" and not obj.opened))
+            and actions.can_act())
+
+
+def draw_interact_prompt(surface):
+    """Small translucent E directly inside the current tile, no caption/arrow."""
+    if not should_show_interact_prompt():
+        return
+    cx, _ = get_cell_center(player.cell)
+    gx, gy = cell_to_xy(player.cell)
+    tile_top = MAP_Y + gy * TILE_HEIGHT
+    prompt_width, prompt_height = 34, 30
+    panel = pygame.Surface((prompt_width, prompt_height), pygame.SRCALPHA)
+    pygame.draw.rect(panel, (0, 0, 0, 165), panel.get_rect(), border_radius=7)
+    pygame.draw.rect(panel, (230, 230, 230, 145), panel.get_rect(), 1, border_radius=7)
+    letter = pygame.font.SysFont("arial", 22, bold=True).render("E", True, (255, 255, 255))
+    panel.blit(letter, letter.get_rect(center=panel.get_rect().center))
+    surface.blit(panel, (int(cx-prompt_width/2), int(tile_top+4)))
 
 
 hide_animation_until = 0
@@ -546,9 +733,11 @@ while running:
                     if target_index < len(inventory.get_items()):
                         item_use_panel.selected_index = target_index
                 elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
-                    # Inventory is modal: ENTER uses the selected item,
-                    # never ends the turn, rolls the die or closes the bag.
-                    if inventory.get_items():
+                    # CLOSE BAG is the final keyboard-selectable menu row.
+                    # ENTER never advances an Event or ends the turn here.
+                    if item_use_panel.selected_index == len(inventory.get_items()):
+                        close_inventory_phase()
+                    elif inventory.get_items():
                         use_inventory_slot(item_use_panel.selected_index)
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 picked = item_use_panel.hit_test(event.pos, len(inventory.get_items()))
@@ -625,18 +814,8 @@ while running:
             if game.status != "playing" or escaped or player.is_dead or zombies.busy or event_phase != "player":
                 continue
 
-            # Key is checked only when the player presses E while standing at the exit.
-            if event.key == pygame.K_e and player.cell == EXIT_CELL and not player.is_moving:
-                if inventory.has_key():
-                    escaped = True
-                    game.win_game()
-                    interactables.message = "Escaped!"
-                    if not end_screen_shown:
-                        screen_manager.show_victory("You found the key and escaped!")
-                        end_screen_shown = True
-                else:
-                    interactables.message = "Exit locked: Key required"
-                    set_goal_hint("The exit is locked. Search the chests and find the key first.")
+            if event.key == pygame.K_e:
+                interact_with_current_tile()
                 continue
 
             if event.key == pygame.K_i:
@@ -645,70 +824,13 @@ while running:
                         and pygame.time.get_ticks() >= loot_reveal_until):
                     inventory_open = True
                     item_use_panel.clamp_selection(len(inventory.get_items()))
-                    item_use_panel.message = "UP/DOWN select; ENTER/SPACE use; I/ESC close."
+                    item_use_panel.message = "UP/DOWN select; ENTER use/close; I/ESC close."
                 continue
 
             if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
                 finish_player_turn()  # Requires 2 actions; never forces bag open.
                 continue
 
-            elif event.key == pygame.K_e and not player.is_moving:
-                if interactables.hidden_in is not None:
-                    result = interactables.interact(player.cell)
-                    if result == "leave":
-                        hide_animation_until = 0
-                        player.play_action("hide", duration_ms=450)
-                        set_goal_hint("You left the wardrobe. Keep moving toward the exit.")
-                else:
-                    obj = interactables.by_cell.get(player.cell)
-
-                    # Give clear feedback when the player tries to reuse a searched chest.
-                    if obj is not None and obj.kind == "chest" and obj.opened:
-                        interactables.message = "This chest has already been searched."
-                        set_goal_hint("This chest has already been searched. Try another chest.")
-                        continue
-
-                    needs_action = (obj is not None and
-                                    (obj.kind == "wardrobe" or not obj.opened))
-                    if needs_action and not actions.can_act():
-                        interactables.message = "No actions remaining"
-                        set_goal_hint("You have used all actions this turn. Wait for your next turn.")
-                    else:
-                        result = interactables.interact(player.cell)
-                        if result == "chest_open":
-                            actions.spend("Search")
-                            player.play_action("search", duration_ms=650)
-                            round_noise += 1
-                            noise_origin = player.cell
-                            loot_result = search_system.search_chest(result)
-                            if loot_result is not None:
-                                found_item = loot_result.get("item")
-                                loot_message = loot_result.get("message", "You found an item.")
-                                interactables.message = "Chest opened - " + loot_message
-                                if found_item is not None:
-                                    show_loot_reveal(found_item)
-                                    item_title = ITEM_CARD_INFO.get(found_item, (loot_message, ""))[0]
-                                    if found_item == ItemType.NOTHING:
-                                        set_goal_hint("This chest had nothing useful inside.")
-                                    else:
-                                        set_goal_hint("You found a " + item_title + "!")
-                                else:
-                                    set_goal_hint("The supplies have been exhausted.")
-                                print("Chest loot:", loot_message)
-                            else:
-                                set_goal_hint("This chest is empty. Search another chest.")
-                        elif result == "chest_already_open":
-                            interactables.message = "Chest already opened"
-                            set_goal_hint("This chest has already been searched. Try another chest.")
-                        elif result == "hide":
-                            actions.spend("Hide")
-                            player.play_action("hide", duration_ms=550)
-                            hide_animation_until = pygame.time.get_ticks() + 550
-                            set_goal_hint("You are hiding. Press E again to leave the wardrobe.")
-                        elif result == "leave":
-                            set_goal_hint("You left the wardrobe.")
-                        elif result is None:
-                            set_goal_hint("Nothing to interact with here. Move onto a chest, wardrobe, or exit.")
 
         elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             if event_phase == "reveal":
@@ -733,9 +855,33 @@ while running:
                 continue
             if game.status != "playing" or escaped or player.is_dead or zombies.busy:
                 continue
+            if inventory_hud_button.collidepoint(event.pos):
+                # The visible INVENTORY label at the bottom opens the bag.
+                # Leave the mouse controls for every other screen unchanged.
+                if not player.is_moving and not inventory_closed_for_round:
+                    inventory_open = True
+                    item_use_panel.clamp_selection(len(inventory.get_items()))
+                    item_use_panel.message = "UP/DOWN select; ENTER use/close; I/ESC close."
+                continue
             if end_turn_button.collidepoint(event.pos):
                 finish_player_turn()
                 continue
+            # Interact by clicking ANYWHERE in the player's tile, including
+            # their sprite. A different tile still uses the original movement.
+            mx, my = event.pos
+            if (not player.is_moving and
+                    MAP_X <= mx < MAP_X + MAP_WIDTH and
+                    MAP_Y <= my < MAP_Y + MAP_HEIGHT):
+                target_x = (mx - MAP_X) // TILE_WIDTH
+                target_y = (my - MAP_Y) // TILE_HEIGHT
+                if xy_to_cell((target_x, target_y)) == player.cell:
+                    if (player.cell == EXIT_CELL and inventory.has_key()) or (
+                            interactables.hidden_in is not None) or (
+                            (obj := interactables.by_cell.get(player.cell)) is not None
+                            and (obj.kind == "wardrobe" or not obj.opened)):
+                        interact_with_current_tile()
+                    # Clicking own tile never spends movement/action accidentally.
+                    continue
             if interactables.hidden_in is not None:
                 interactables.message = "Press E to leave the wardrobe first"
             elif player.is_moving:
@@ -811,11 +957,12 @@ while running:
             player.cell, interactables.hidden_in is not None,
             priority_noise=primary,
         )
-        inventory.finish_zombie_turn()  # remove used makers
-        # Event locks last exactly until the following Zombie Turn finishes.
-        for locked_edge in temporary_event_locks:
-            board.locked.discard(locked_edge)
-        temporary_event_locks.clear()
+        # Do not remove activated devices yet: zombies still have walking/attack
+        # animations to play, and the active artwork must be visible meanwhile.
+        # An Event 3 lock is active for two complete subsequent rounds.
+        # Age it ONLY after each corresponding Zombie Turn; the door opens
+        # before the third Player Turn begins. Independently track each door.
+        expire_event_locks_after_zombie_turn()
         event_noise_total = 0
         round_noise = 0                 # next round starts quiet
         noise_origin = player.cell
@@ -863,8 +1010,12 @@ while running:
     # the final zombie animation before showing the Game Master dice prompt.
     if (event_phase == "zombie" and game is not None
             and game.status == "playing" and not zombies.busy):
+        inventory.finish_zombie_turn()  # remove device when Zombie Turn actually ends
         event_phase = "zombie_pause"
         zombie_phase_finished_at = pygame.time.get_ticks()
+
+    if event_phase == "death_pause" and game is not None and not zombies.busy:
+        inventory.finish_zombie_turn()
 
     if (event_phase == "zombie_pause"
             and zombie_phase_finished_at is not None
@@ -965,6 +1116,7 @@ while running:
         furniture.draw(screen, font, map_x=MAP_X, map_y=MAP_Y,
                        tile_width=TILE_WIDTH, tile_height=TILE_HEIGHT)
         interactables.draw(screen, MAP_X, MAP_Y, TILE_WIDTH, TILE_HEIGHT)
+        draw_placed_noise_makers(screen)  # below Player sprite, so standing on it hides it
         draw_locked_door_overlays(screen)
         zombies.draw_overlay(screen, get_cell_center)
         if not player.is_dead:
@@ -973,6 +1125,7 @@ while running:
                 pygame.time.get_ticks() < hide_animation_until):
             player.draw(screen, get_cell_center)
         zombies.draw(screen, get_cell_center)
+        draw_interact_prompt(screen)
 
         # Keep GameState synchronized with the systems that own live gameplay data.
         sync_game_state()

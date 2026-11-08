@@ -46,7 +46,18 @@ class Player:
                 print(f"Player sprite missing: {path}")
                 continue
             img = pygame.image.load(str(path)).convert_alpha()
-            self.sprites[number] = pygame.transform.smoothscale(img, self.sprite_size)
+            if number == SPECIAL_NUMBERS["search"]:
+                # Search artwork includes a chest and is wider than other poses.
+                # Keep its original aspect ratio AND fit inside one 90x90 tile.
+                max_width, max_height = 84, 78
+                original_width, original_height = img.get_size()
+                scale = min(max_width / original_width,
+                            max_height / original_height)
+                fitted_size = (max(1, round(original_width * scale)),
+                               max(1, round(original_height * scale)))
+                self.sprites[number] = pygame.transform.smoothscale(img, fitted_size)
+            else:
+                self.sprites[number] = pygame.transform.smoothscale(img, self.sprite_size)
           
     def move(self, dx, dy, board, furniture=None):
         x, y = cell_to_xy(self.cell)

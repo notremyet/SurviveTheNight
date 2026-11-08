@@ -325,6 +325,16 @@ class ZombieManager:
         for z in self.zombies:
             self._zombie_turn(z, player_cell, player_hidden, heard, events, priority_noise)
             z.compute_visible(self.board)
+        # The Remote influences THIS Zombie Turn only. Never carry its
+        # investigation target into the next turn, even when unreachable.
+        # Do not erase normal sightings or investigations of player sounds.
+        for z in self.zombies:
+            maker_target = getattr(z, "noise_maker_target", None)
+            if maker_target is not None:
+                z.noise_maker_target = None
+                if z.state == INVESTIGATE and z.target == maker_target:
+                    z.state = PATROL
+                    z.target = None
         self.noises.clear()
         self.noise_level = 0
         return events
@@ -374,6 +384,9 @@ class ZombieManager:
                 z.lunge = 1.0
                 self._hits.append([player_cell, 0.0])
                 events.append(ZombieEvent("attack", z, ATTACK_DAMAGE))
+                # Attack from the adjacent tile: NEVER step onto the player.
+                # This zombie gets one attack and ends its turn immediately,
+                # regardless of how many movement steps remain.
                 return
             nxt = self._next_step(z, self._goal(z), player_cell)
             if nxt is None:
