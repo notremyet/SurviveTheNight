@@ -52,7 +52,7 @@ CHASE_STEPS = 2
 ATTACK_DAMAGE = 1
 LINGER_ROUNDS = 2        # rounds spent looking around before giving up
 DETOUR_LIMIT = 3         # extra cells a zombie will walk to get around another zombie
-MOVE_SPEED = 5.0         # animation only: cells per second
+MOVE_SPEED = 3.5         # animation only: cells per second
 HIT_FX_TIME = 0.9        # seconds the bite marks stay on screen
 SPAWN_TIME = 0.8         # seconds the "rising from the ground" frame is shown
 
