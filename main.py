@@ -25,6 +25,7 @@ from screen_manager import ScreenManager
 from events import EventSystem
 from item_use_ui import ItemUsePanel
 from item_animations import ItemUseAnimation
+from sound_manager import SoundManager
 
 pygame.init()
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
@@ -86,6 +87,7 @@ end_turn_button = pygame.Rect(WIDTH - 185, HEIGHT - 67, 160, 38)
 # Match its original position without modifying the teammate's ui.py.
 inventory_hud_button = pygame.Rect(24, HEIGHT - 82 + 31, 105, 30)
 screen_manager = ScreenManager(screen)
+sound = SoundManager()
 game = None
 end_screen_shown = False
 paused = False
@@ -343,6 +345,7 @@ def reset_game():
     global pending_event_sounds, temporary_event_locks, hide_turn_penalty
 
     hide_turn_penalty = False
+    sound.reset()
     board = Board()
     pending_event_sounds = []
     temporary_event_locks = {}
@@ -456,6 +459,7 @@ def use_inventory_slot(index):
                 item_use_panel.message = "Cannot place Noise Maker right now."
         else:
             player.play_action("noise", duration_ms=550)
+            sound.play("noise_maker")
             item_use_animation.start("place_noise_maker")
             item_use_panel.message = f"Noise Maker placed at {player.cell}. Remote {remote_id} ready."
     elif isinstance(item, dict) and item.get("type") == "remote":
@@ -550,47 +554,6 @@ YELLOW = (255, 217, 65)
 WHITE_GLOW = (242, 248, 255)
 
 
-def draw_exit_marker(surface):
-    """High-contrast exit sign over I7, independent of the background artwork."""
-    x, y = cell_to_xy(EXIT_CELL)
-    tile = pygame.Rect(MAP_X + x * TILE_WIDTH, MAP_Y + y * TILE_HEIGHT,
-                       TILE_WIDTH, TILE_HEIGHT)
-    ticks = pygame.time.get_ticks()
-    pulse = 0.72 + 0.28 * (1 + math.sin(ticks / 240.0)) / 2
-    glow = pygame.Surface((TILE_WIDTH, TILE_HEIGHT), pygame.SRCALPHA)
-    pygame.draw.rect(glow, (80, 245, 145, int(32 * pulse)),
-                     glow.get_rect().inflate(-8, -8), border_radius=7)
-    for inset, alpha, width in ((3, 70, 8), (5, 160, 4), (7, 245, 2)):
-        pygame.draw.rect(glow, (80, 255, 140, int(alpha * pulse)),
-                         glow.get_rect().inflate(-inset * 2, -inset * 2),
-                         width, border_radius=6)
-    surface.blit(glow, tile.topleft)
-    label_font = pygame.font.SysFont("arial", max(12, TILE_WIDTH // 5), bold=True)
-    label = label_font.render("EXIT", True, (230, 255, 230))
-    bg = pygame.Rect(0, 0, label.get_width() + 12, label.get_height() + 5)
-    bg.midbottom = (tile.centerx, tile.bottom - 5)
-    pygame.draw.rect(surface, (12, 85, 46), bg, border_radius=4)
-    pygame.draw.rect(surface, (105, 255, 165), bg, 2, border_radius=4)
-    surface.blit(label, label.get_rect(center=bg.center))
-
-
-def check_zombie_encirclement():
-    """Lose when zombies occupy every otherwise walkable adjacent tile."""
-    if (game is None or game.status != "playing" or escaped or paused
-            or event_phase != "player" or player.is_moving or zombies.busy
-            or interactables.hidden_in is not None):
-        return
-    legal_neighbors = [cell for cell in board.neighbors(player.cell)
-                       if not furniture.is_blocked(cell)]
-    # Do not call a room with no usable doors 'surrounded by zombies'.
-    if legal_neighbors and all(zombies.occupied(cell) for cell in legal_neighbors):
-        game.lose_game("Surrounded by zombies! No escape route.")
-        global end_screen_shown
-        if not end_screen_shown:
-            screen_manager.show_game_over("Surrounded by zombies! No escape route.")
-            end_screen_shown = True
-
-
 def draw_move_highlights(surface, origin):
     if (player.is_dead or player.is_moving or zombies.busy or
             interactables.hidden_in is not None or not actions.can_act()):
@@ -644,6 +607,7 @@ def interact_with_current_tile():
     if interactables.hidden_in is not None:
         result = interactables.interact(player.cell)
         if result == "leave":
+            sound.play("wardrobe")
             hide_animation_until = 0
             player.play_action("hide", duration_ms=450)
             set_goal_hint("You left the wardrobe. Keep moving toward the exit.")
@@ -664,6 +628,7 @@ def interact_with_current_tile():
         else:
             result = interactables.interact(player.cell)
             if result == "chest_open":
+                sound.play("chest")
                 actions.spend("Search")
                 player.play_action("search", duration_ms=650)
                 round_noise += 1
@@ -689,6 +654,7 @@ def interact_with_current_tile():
                 interactables.message = "Chest already opened"
                 set_goal_hint("This chest has already been searched. Try another chest.")
             elif result == "hide":
+                sound.play("wardrobe")
                 actions.spend("Hide")
                 # Hiding immediately ends this player turn; the next round is forfeited.
                 hide_turn_penalty = True
@@ -799,29 +765,30 @@ while running:
             continue
 
         elif screen_manager.current_screen == "game" and paused:
-            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                choice = ui.pause_hit_test(event.pos, pause_instructions)
-                if choice == "BACK":
-                    pause_instructions = False
-                elif choice == "RESTART":
-                    reset_game()
-                    event_phase = "player"
-                    paused = False
-                elif choice == "RESUME":
-                    paused = False
-                elif choice == "HOW TO PLAY":
-                    pause_instructions = True
-                elif choice == "MAIN MENU":
-                    paused = False
-                    game = None
-                    screen_manager.current_screen = "menu"
-                elif choice == "QUIT":
-                    running = False
-            elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+            if event.type == pygame.KEYDOWN:
                 if pause_instructions:
-                    pause_instructions = False
+                    if event.key in (pygame.K_ESCAPE, pygame.K_BACKSPACE, pygame.K_RETURN):
+                        pause_instructions = False
                 else:
-                    paused = False
+                    if event.key in (pygame.K_UP, pygame.K_w):
+                        pause_selected = (pause_selected - 1) % 5
+                    elif event.key in (pygame.K_DOWN, pygame.K_s):
+                        pause_selected = (pause_selected + 1) % 5
+                    elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
+                        if pause_selected == 0:  # RESTART
+                            reset_game()
+                            event_phase = "player"
+                            paused = False
+                        elif pause_selected == 1:  # RESUME
+                            paused = False
+                        elif pause_selected == 2:
+                            pause_instructions = True
+                        elif pause_selected == 3:
+                            paused = False
+                            game = None
+                            screen_manager.current_screen = "menu"
+                        elif pause_selected == 4:
+                            running = False
             continue
 
         elif screen_manager.current_screen != "game":
@@ -962,11 +929,10 @@ while running:
         player.update(dt)
         zombies.update(dt)
 
-    check_zombie_encirclement()
-
     # A move's sound is made at the final destination once the animation ends.
     if game is not None and not paused and pending_movement_noise is not None and not player.is_moving:
         destination, style = pending_movement_noise
+        sound.play(style)
         if style == "run":
             round_noise += 2
             noise_origin = destination
@@ -1018,6 +984,8 @@ while running:
         if total_damage:
             lost = player.take_damage(total_damage)
             if lost:
+                sound.play("hurt")
+                sound.play("zombie_attack")
                 interactables.message = f"Zombie attack! -{lost} HP"
         elif any(ev.kind == "spotted" for ev in combat_events):
             interactables.message = "A zombie spotted you!"
@@ -1121,6 +1089,7 @@ while running:
                 )
                 pending_event_loot = (found, received)
 
+        sound.play("event")
         event_phase = "dice_result"
         dice_result_until = pygame.time.get_ticks() + DICE_RESULT_HOLD
 
@@ -1175,7 +1144,6 @@ while running:
         interactables.draw(screen, MAP_X, MAP_Y, TILE_WIDTH, TILE_HEIGHT)
         draw_placed_noise_makers(screen)  # below Player sprite, so standing on it hides it
         draw_locked_door_overlays(screen)
-        draw_exit_marker(screen)
         zombies.draw_overlay(screen, get_cell_center)
         if not player.is_dead:
             draw_move_highlights(screen, player.cell)
@@ -1256,6 +1224,7 @@ while running:
     else:
         screen_manager.draw()
 
+    sound.sync(screen_manager.current_screen, paused, game.status if game is not None else "menu")
     pygame.display.flip()
 
 pygame.quit()
