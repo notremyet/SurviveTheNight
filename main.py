@@ -26,6 +26,7 @@ from events import EventSystem
 from item_use_ui import ItemUsePanel
 from item_animations import ItemUseAnimation
 from sound_manager import SoundManager
+from intro_scene import IntroScene
 
 pygame.init()
 sounds = SoundManager()  # Use the teammate's existing music and SFX files.
@@ -116,6 +117,7 @@ end_turn_button = pygame.Rect(WIDTH - 185, HEIGHT - 67, 160, 38)
 # Entire inventory row is clickable; exclude the END TURN button on the right.
 inventory_hud_button = pygame.Rect(23, HEIGHT - 82 + 32, WIDTH - 230, 32)
 screen_manager = ScreenManager(screen)
+intro = IntroScene((WIDTH, HEIGHT))
 game = None
 end_screen_shown = False
 paused = False
@@ -844,6 +846,15 @@ while running:
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             running = False
+            continue
+
+        # Intro takes priority over every menu/game input.
+        if intro.active:
+            intro.handle_event(event)
+            if not intro.active:
+                # Force SoundManager to reload gameplay music after intro.
+                sounds.music_state = None
+            continue
 
         # Chest loot reveal is a modal: mouse click or Enter closes it
         # immediately. Do not pass the same input through to movement,
@@ -934,6 +945,7 @@ while running:
                 running = False
             elif result == "start":
                 reset_game()
+                intro.start()
             continue
 
         elif game is not None and game.status in ("won", "lost"):
@@ -1257,7 +1269,8 @@ while running:
         # Keep any event-generated noise for the next player round.
 
     audio_status = game.status if game is not None else "playing"
-    sounds.sync(screen_manager.current_screen, paused, audio_status)
+    if not intro.active:
+        sounds.sync(screen_manager.current_screen, paused, audio_status)
 
     if screen_manager.current_screen == "game" and game is not None:
         screen.fill((20, 18, 28))
@@ -1347,6 +1360,10 @@ while running:
             screen_manager.draw()
     else:
         screen_manager.draw()
+
+    # Draw intro last so gameplay is never visible above its artwork.
+    if intro.active:
+        intro.draw(screen)
 
     pygame.display.flip()
 
