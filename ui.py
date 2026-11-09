@@ -73,18 +73,28 @@ class GameUI:
             msg = self.small_font.render(msg_text, True, self.colors["green"])
             screen.blit(msg, (500, bottom_y + 39))
 
+    def pause_hit_test(self, pos, show_instructions=False):
+        """Return the clicked pause action, or None."""
+        panel = pygame.Rect(WIDTH // 2 - 260, HEIGHT // 2 - 220, 520, 440)
+        if show_instructions:
+            back = pygame.Rect(panel.x + 25, panel.bottom - 60, 190, 45)
+            return "BACK" if back.collidepoint(pos) else None
+        for i, option in enumerate(("RESTART", "RESUME", "HOW TO PLAY", "MAIN MENU", "QUIT")):
+            rect = pygame.Rect(panel.x + 45, panel.y + 77 + i * 65, 430, 50)
+            if rect.collidepoint(pos):
+                return option
+        return None
+
     def draw_pause(self, screen, selected=0, show_instructions=False):
         shade = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
         shade.fill((0, 0, 0, 190))
         screen.blit(shade, (0, 0))
-        panel = pygame.Rect(WIDTH // 2 - 260, HEIGHT // 2 - 220,
-                            520, 440 if show_instructions else 360)
+        panel = pygame.Rect(WIDTH // 2 - 260, HEIGHT // 2 - 220, 520, 440)
         self.draw_panel(screen, panel)
-        title = "HOW TO PLAY" if show_instructions else "PAUSED"
-        title_surface = self.title_font.render(title, True, self.colors["yellow"])
-        screen.blit(title_surface, title_surface.get_rect(
-            center=(WIDTH // 2, panel.y + 45)))
+        mouse = pygame.mouse.get_pos()
         if show_instructions:
+            heading = self.title_font.render("HOW TO PLAY", True, self.colors["yellow"])
+            screen.blit(heading, heading.get_rect(center=(WIDTH // 2, panel.y + 43)))
             lines = [
                 "Click a yellow tile: walk 1 tile",
                 "Click a white tile: run 2 tiles",
@@ -92,22 +102,26 @@ class GameUI:
                 "Stand at a wardrobe and press E: hide",
                 "Press E again to leave a wardrobe",
                 "Find the key, reach exit I7, then press E",
-                "Press ESC to return to the pause menu",
             ]
-            y = panel.y + 100
-            for line in lines:
-                self.draw_text(screen, line, panel.x + 35, y, self.body_font)
-                y += 36
-            self.draw_text(screen, "ESC  -  BACK", panel.x + 35,
-                           panel.bottom - 45, self.small_font, self.colors["yellow"])
+            for i, line in enumerate(lines):
+                self.draw_text(screen, line, panel.x + 35, panel.y + 95 + i * 39, self.body_font)
+            back = pygame.Rect(panel.x + 25, panel.bottom - 60, 190, 45)
+            hovered = back.collidepoint(mouse)
+            pygame.draw.rect(screen, (65, 56, 45) if hovered else (40, 40, 50), back, border_radius=8)
+            self.draw_text(screen, "BACK", back.x + 58, back.y + 10,
+                           self.title_font, self.colors["yellow"] if hovered else self.colors["white"])
         else:
-            options = ["RESUME", "HOW TO PLAY", "MAIN MENU", "QUIT"]
-            y = panel.y + 110
+            pause_font = pygame.font.SysFont("arial", 48, bold=True)
+            title = pause_font.render("PAUSE", True, (255, 55, 65))
+            screen.blit(title, title.get_rect(center=(WIDTH // 2, panel.y + 43)))
+            options = ("RESTART", "RESUME", "HOW TO PLAY", "MAIN MENU", "QUIT")
             for i, label in enumerate(options):
-                color = self.colors["yellow"] if i == selected else self.colors["white"]
-                text = self.title_font.render(label, True, color)
-                screen.blit(text, text.get_rect(center=(WIDTH // 2, y)))
-                y += 65
-            self.draw_text(screen, "UP / DOWN to select  -  ENTER to confirm",
-                           panel.x + 45, panel.bottom - 38,
-                           self.small_font, self.colors["muted"])
+                rect = pygame.Rect(panel.x + 45, panel.y + 77 + i * 65, 430, 50)
+                hovered = rect.collidepoint(mouse)
+                if hovered:
+                    pygame.draw.rect(screen, (58, 49, 45), rect, border_radius=8)
+                color = self.colors["yellow"] if hovered else self.colors["white"]
+                rendered = self.title_font.render(label, True, color)
+                screen.blit(rendered, rendered.get_rect(center=rect.center))
+            hint = self.small_font.render("Click an option to select", True, self.colors["muted"])
+            screen.blit(hint, hint.get_rect(center=(WIDTH // 2, panel.bottom - 18)))

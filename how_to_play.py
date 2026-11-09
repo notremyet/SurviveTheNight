@@ -43,22 +43,24 @@ class HowToPlay:
 
         self.instructions = [
             ("OBJECTIVE", [
-                "Find the key inside a chest, then reach the exit at I7.",
-                "Escape before the end of Round 8."
+                "- Find the key inside a chest, then reach the exit.",
+                "- Escape before the end of Round 12."
             ]),
             ("CONTROLS", [
-                "Click a YELLOW tile: Walk 1 tile (uses 1 Action).",
-                "Click a WHITE tile: Run 2 tiles (uses 1 Action).",
-                "Press E: Interact with a chest, wardrobe or exit.",
-                "Press I: Check your inventory."
+                "- Click a YELLOW tile: Walk 1 tile (uses 1 Action).",
+                "- Click a WHITE tile: Run 2 tiles (uses 1 Action).",
+                "- Press E: Interact with a chest, wardrobe or exit.",
+                "- Press I: Check your inventory."
             ]),
             ("GAME RULES", [
-                "You start with 3 HP and get 2 Actions each round.",
-                "Search chests to find useful items and the Exit Key.",
-                "Hide in a wardrobe to avoid being seen by the zombie.",
-                "Running and searching make noise and can attract the zombie.",
-                "The zombie takes its turn after you use both Actions.",
-                "You lose if your HP reaches 0 or Round 8 ends before escape."
+                "- You start with 3 HP and get 2 Actions each round.",
+                "- Search chests to find useful items and the Exit Key.",
+                "- Hide in a wardrobe to avoid being seen by the zombie,",
+                "  then the zombie will be push out of the room ",
+                "  but you will lose all the actions.",
+                "- Running and searching make noise and can attract the zombie.",
+                "- The zombie takes its turn after you use both Actions.",
+                "- You lose if your HP reaches 0 or Round 12 ends before escape."
             ])
         ]
 

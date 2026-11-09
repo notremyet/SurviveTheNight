@@ -42,6 +42,7 @@ from pathlib import Path
 import pygame
 
 from settings import COLS, ROWS, cell_to_xy, xy_to_cell
+from map import ROOMS
 
 # ---------------------------------------------------------------- tuning
 SIGHT_RANGE = 3.5        # cells, centre to centre
@@ -206,6 +207,8 @@ class Zombie:
         self.lunge = 0.0          # 1 -> 0 while the attack plays
         self.icon_pop = 0.0       # 1 -> 0 when "!" or "?" appears
         self.spawn_time = SPAWN_TIME
+        self.steps_this_turn = 0
+        self.step_badge = 0
 
     # senses
     def can_see(self, board, target):
@@ -238,6 +241,7 @@ class Zombie:
         self.facing = (x1 - x0, y1 - y0)
         self.cell = cell
         self.move_queue.append((x1, y1))
+        self.steps_this_turn += 1
         if self.path and self.path[0] == cell:
             self.path = self.path[1:]     # keep only the cells still ahead
 
@@ -266,6 +270,7 @@ class Zombie:
             if dist <= step:
                 self.draw_x, self.draw_y = float(tx), float(ty)
                 self.move_queue.popleft()
+                self.step_badge += 1
             else:
                 self.draw_x += dx / dist * step
                 self.draw_y += dy / dist * step
@@ -283,7 +288,7 @@ class ZombieManager:
         self.spawns = spawns or DEFAULT_SPAWNS
         self.rng = random.Random(seed)
         self.debug = False        # F1: paths, targets and state names
-        self.show_vision = True   # red tint on the cells each zombie can see
+        self.show_vision = False  # blind zombies: no vision tint
         self._frames = None
         self._frame_size = None
         self._font = None
@@ -297,7 +302,7 @@ class ZombieManager:
         self._rings = []          # [cell, loudness, age]
         self._hits = []           # [cell, age]
         for z in self.zombies:
-            z.compute_visible(self.board)
+            z.visible_cells.clear()
 
     # ---- API used by the other modules
     def make_noise(self, cell, loudness, source=""):
@@ -318,13 +323,17 @@ class ZombieManager:
     def alerted(self):
         return any(z.state == CHASE for z in self.zombies)
 
-    def take_turn(self, player_cell, player_hidden=False, priority_noise=None):
+    def take_turn(self, player_cell, player_hidden=False, priority_noise=None, hide_escape=False):
         """Run one zombie phase. Returns a list of ZombieEvent."""
         events = []
         heard = [(n, sound_reach(self.board, n.cell, n.loudness)) for n in self.noises]
         for z in self.zombies:
+            z.steps_this_turn = 0
+            z.step_badge = 0
+            if hide_escape and player_hidden and self._evacuate_room(z, player_cell):
+                continue
             self._zombie_turn(z, player_cell, player_hidden, heard, events, priority_noise)
-            z.compute_visible(self.board)
+            z.visible_cells.clear()
         # The Remote influences THIS Zombie Turn only. Never carry its
         # investigation target into the next turn, even when unreachable.
         # Do not erase normal sightings or investigations of player sounds.
@@ -339,89 +348,84 @@ class ZombieManager:
         self.noise_level = 0
         return events
 
+    def _room_for(self, cell):
+        x, y = cell_to_xy(cell)
+        for name, (rx, ry, rw, rh), _ in ROOMS:
+            if rx <= x < rx + rw and ry <= y < ry + rh:
+                return name
+        return None
+
+    def _evacuate_room(self, z, hidden_cell):
+        """If a zombie shares the hiding room, leave via a legal path, with no step cap."""
+        room = self._room_for(hidden_cell)
+        if room is None or self._room_for(z.cell) != room:
+            return False
+        furniture = set(getattr(self.furniture, "blocked_cells", set()))
+        occupied = {other.cell for other in self.zombies if other is not z}
+        candidates = []
+        for y in range(ROWS):
+            for x in range(COLS):
+                cell = _cell(x, y)
+                if (self.board.inside(cell) and self._room_for(cell) != room
+                        and cell not in furniture and cell not in occupied
+                        and cell != hidden_cell):
+                    path = bfs_path(self.board, z.cell, cell,
+                                    furniture | occupied | {hidden_cell})
+                    if path is not None:
+                        candidates.append((len(path), cell, path))
+        if not candidates:
+            return False
+        _, _, path = min(candidates)
+        for step in path:
+            z.step_to(step)
+        z.state = PATROL
+        z.target = None
+        z.noise_maker_target = None
+        return True
+
     # ---- AI
     def _zombie_turn(self, z, player_cell, hidden, heard, events, priority_noise=None):
-        # A newly activated Noise Maker has priority over the usual sensing.
-        # Only zombies within its sound radius react to it.
-        if priority_noise is not None:
-            maker_cell, loudness = priority_noise
-            if z.cell in sound_reach(self.board, maker_cell, loudness):
-                z.noise_maker_target = maker_cell
-
-        maker_target = getattr(z, "noise_maker_target", None)
-        if maker_target is not None and z.cell == maker_target:
-            z.noise_maker_target = None
-            maker_target = None
-
-        # Until reaching the maker location, investigate it first.
-        if maker_target is not None:
-            self._set_state(z, INVESTIGATE, maker_target, events)
-        elif not hidden and z.can_see(self.board, player_cell):
-            self._set_state(z, CHASE, player_cell, events)
-        else:
-            noise = self._loudest_heard(z, heard)
-            if noise is not None:
-                self._set_state(z, INVESTIGATE, noise.cell, events)
-            elif z.state == CHASE:
-                # Lost the player: go and check where they were last seen.
-                self._set_state(z, INVESTIGATE, z.target, events)
-
-        # 2) act. Noise strength is also the investigation movement budget.
-        # A loud sound can pull a zombie several tiles along a legal path.
-        # Patrol and visual chase retain their independent movement rules.
-        steps = {PATROL: PATROL_STEPS, INVESTIGATE: INVESTIGATE_STEPS,
-                 CHASE: CHASE_STEPS}[z.state]
-        if z.state == INVESTIGATE:
-            audible = self._loudest_heard(z, heard)
-            if audible is not None:
-                steps = max(INVESTIGATE_STEPS, int(audible.loudness))
-            elif maker_target is not None and priority_noise is not None:
-                steps = max(INVESTIGATE_STEPS, int(priority_noise[1]))
-        stuck = False
-        for _ in range(steps):
-            if z.state == CHASE and not hidden and self.board.can_step(z.cell, player_cell):
-                z.face(player_cell)
-                z.lunge = 1.0
-                self._hits.append([player_cell, 0.0])
-                events.append(ZombieEvent("attack", z, ATTACK_DAMAGE))
-                # Attack from the adjacent tile: NEVER step onto the player.
-                # This zombie gets one attack and ends its turn immediately,
-                # regardless of how many movement steps remain.
-                return
-            nxt = self._next_step(z, self._goal(z), player_cell)
-            if nxt is None:
-                stuck = True
-                break
-            z.step_to(nxt)
-            # When the maker is reached, return to regular AI on the next
-            # available step/turn, without changing the team's movement budget.
-            if getattr(z, "noise_maker_target", None) == z.cell:
-                z.noise_maker_target = None
-                # Maker reached: fall back to regular sound investigation;
-                # if there is no other audible sound, resume patrol.
-                usual = self._loudest_heard(
-                    z, [(n, reach) for n, reach in heard
-                        if n.source != "noise_maker"]
-                )
-                if usual is not None:
-                    self._set_state(z, INVESTIGATE, usual.cell, events)
-                else:
-                    self._set_state(z, PATROL, None, events)
-            if (getattr(z, "noise_maker_target", None) is None
-                    and z.state != CHASE and not hidden
-                    and z.can_see(self.board, player_cell)):
-                self._set_state(z, CHASE, player_cell, events)
-
-        # 3) nothing left to walk to
-        if not stuck:
-            return
-        if z.state == INVESTIGATE:
-            z.linger -= 1
-            z.turn_clockwise()            # look around
-            if z.linger <= 0:
-                self._set_state(z, PATROL, None, events)
-        elif z.state == PATROL:
-            self._advance_patrol(z)
+        # Blind AI: noise alone drives movement; no line-of-sight or red cone.
+        # A triggered remote takes priority and consumes the first TWO steps.
+        normal = max((n for n, r in heard if n.source != "noise_maker"),
+                     key=lambda n: n.loudness, default=None)
+        budget = max((int(n.loudness) for n, reach in heard), default=0)
+        maker_cell = priority_noise[0] if priority_noise is not None else None
+        if maker_cell is not None and budget > 0:
+            maker_path = bfs_path(self.board, z.cell, maker_cell,
+                                  set(getattr(self.furniture, "blocked_cells", set()))
+                                  | {o.cell for o in self.zombies if o is not z}
+                                  | {player_cell})
+            if maker_path is not None:
+                self._set_state(z, INVESTIGATE, maker_cell, events)
+                for cell in maker_path[:2]:
+                    nxt = self._next_step(z, maker_cell, player_cell)
+                    if nxt is None:
+                        break
+                    z.step_to(nxt)
+                budget = max(0, budget - z.steps_this_turn)
+        # After the remote's first two steps, investigate the player's sound.
+        if normal is not None and not hidden:
+            self._set_state(z, INVESTIGATE, normal.cell, events)
+            for _ in range(budget):
+                if self.board.can_step(z.cell, player_cell):
+                    z.face(player_cell)
+                    z.lunge = 1.0
+                    self._hits.append([player_cell, 0.0])
+                    events.append(ZombieEvent("attack", z, ATTACK_DAMAGE))
+                    return
+                nxt = self._next_step(z, normal.cell, player_cell)
+                if nxt is None:
+                    break
+                z.step_to(nxt)
+        elif maker_cell is None:
+            # Quiet round: blind zombies follow their predefined patrol route.
+            # Patrol is one valid grid step per zombie turn, never teleporting.
+            self._set_state(z, PATROL, None, events)
+            goal = self._goal(z)
+            nxt = self._next_step(z, goal, player_cell)
+            if nxt is not None:
+                z.step_to(nxt)
 
     def _set_state(self, z, state, target, events):
         if state != z.state:
@@ -581,8 +585,13 @@ class ZombieManager:
                 rect = image.get_rect(center=(round(px), round(py)))
             surface.blit(image, rect)
 
-            if z.state in (CHASE, INVESTIGATE):
-                self._draw_icon(surface, px, min(rect.top, py - th * 0.45) - 10, z)
+            # Show how many grid cells this zombie travelled this turn.
+            badge = self._get_small_font().render(str(z.step_badge), True, (255, 255, 255))
+            bx, by = round(px), min(rect.top, round(py - th * 0.45)) - 24
+            pygame.draw.circle(surface, (35, 38, 49), (bx, by), 14)
+            pygame.draw.circle(surface, (244, 200, 86), (bx, by), 14, 2)
+            surface.blit(badge, badge.get_rect(center=(bx, by)))
+
 
         for cell, age in self._hits:
             x, y = get_cell_center(cell)

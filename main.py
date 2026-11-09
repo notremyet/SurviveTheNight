@@ -109,7 +109,7 @@ pending_movement_noise = None
 # Alarm Event 6 is heard in the following Zombie Turn.
 # Event 3 doors stay locked through TWO subsequent Player/Zombie turns.
 pending_event_sounds = []
-temporary_event_locks = {}  # door edge -> remaining Zombie Turns (2, then 1)
+temporary_event_locks = {}  # door edge -> remaining Zombie Turns
 goal_hint = ""
 goal_hint_until = 0
 
@@ -340,8 +340,9 @@ def reset_game():
     global dice_roll_started, dice_result_until, rolled_dice_value
     global inventory_open, inventory_closed_for_round
     global loot_reveal_source, loot_reveal_received
-    global pending_event_sounds, temporary_event_locks
+    global pending_event_sounds, temporary_event_locks, hide_turn_penalty
 
+    hide_turn_penalty = False
     board = Board()
     pending_event_sounds = []
     temporary_event_locks = {}
@@ -368,7 +369,7 @@ def reset_game():
             return None
         chosen = random.choice(available_doors)
         board.locked.add(chosen)
-        temporary_event_locks[chosen] = 2  # lock for the next two full player rounds
+        temporary_event_locks[chosen] = 1  # unlock after the next Zombie Turn
         return chosen
 
     event_system = EventSystem(
@@ -549,6 +550,47 @@ YELLOW = (255, 217, 65)
 WHITE_GLOW = (242, 248, 255)
 
 
+def draw_exit_marker(surface):
+    """High-contrast exit sign over I7, independent of the background artwork."""
+    x, y = cell_to_xy(EXIT_CELL)
+    tile = pygame.Rect(MAP_X + x * TILE_WIDTH, MAP_Y + y * TILE_HEIGHT,
+                       TILE_WIDTH, TILE_HEIGHT)
+    ticks = pygame.time.get_ticks()
+    pulse = 0.72 + 0.28 * (1 + math.sin(ticks / 240.0)) / 2
+    glow = pygame.Surface((TILE_WIDTH, TILE_HEIGHT), pygame.SRCALPHA)
+    pygame.draw.rect(glow, (80, 245, 145, int(32 * pulse)),
+                     glow.get_rect().inflate(-8, -8), border_radius=7)
+    for inset, alpha, width in ((3, 70, 8), (5, 160, 4), (7, 245, 2)):
+        pygame.draw.rect(glow, (80, 255, 140, int(alpha * pulse)),
+                         glow.get_rect().inflate(-inset * 2, -inset * 2),
+                         width, border_radius=6)
+    surface.blit(glow, tile.topleft)
+    label_font = pygame.font.SysFont("arial", max(12, TILE_WIDTH // 5), bold=True)
+    label = label_font.render("EXIT", True, (230, 255, 230))
+    bg = pygame.Rect(0, 0, label.get_width() + 12, label.get_height() + 5)
+    bg.midbottom = (tile.centerx, tile.bottom - 5)
+    pygame.draw.rect(surface, (12, 85, 46), bg, border_radius=4)
+    pygame.draw.rect(surface, (105, 255, 165), bg, 2, border_radius=4)
+    surface.blit(label, label.get_rect(center=bg.center))
+
+
+def check_zombie_encirclement():
+    """Lose when zombies occupy every otherwise walkable adjacent tile."""
+    if (game is None or game.status != "playing" or escaped or paused
+            or event_phase != "player" or player.is_moving or zombies.busy
+            or interactables.hidden_in is not None):
+        return
+    legal_neighbors = [cell for cell in board.neighbors(player.cell)
+                       if not furniture.is_blocked(cell)]
+    # Do not call a room with no usable doors 'surrounded by zombies'.
+    if legal_neighbors and all(zombies.occupied(cell) for cell in legal_neighbors):
+        game.lose_game("Surrounded by zombies! No escape route.")
+        global end_screen_shown
+        if not end_screen_shown:
+            screen_manager.show_game_over("Surrounded by zombies! No escape route.")
+            end_screen_shown = True
+
+
 def draw_move_highlights(surface, origin):
     if (player.is_dead or player.is_moving or zombies.busy or
             interactables.hidden_in is not None or not actions.can_act()):
@@ -581,7 +623,7 @@ def interact_with_current_tile():
 
     Existing chest/wardrobe rules and action costs remain unchanged.
     """
-    global escaped, end_screen_shown, hide_animation_until, round_noise, noise_origin
+    global escaped, end_screen_shown, hide_animation_until, round_noise, noise_origin, hide_turn_penalty
     if (game is None or game.status != "playing" or escaped or player.is_dead
             or player.is_moving or zombies.busy or inventory_open
             or event_phase != "player"):
@@ -648,6 +690,9 @@ def interact_with_current_tile():
                 set_goal_hint("This chest has already been searched. Try another chest.")
             elif result == "hide":
                 actions.spend("Hide")
+                # Hiding immediately ends this player turn; the next round is forfeited.
+                hide_turn_penalty = True
+                actions.remaining = 0
                 player.play_action("hide", duration_ms=550)
                 hide_animation_until = pygame.time.get_ticks() + 550
                 set_goal_hint("You are hiding. Press E again to leave the wardrobe.")
@@ -754,26 +799,29 @@ while running:
             continue
 
         elif screen_manager.current_screen == "game" and paused:
-            if event.type == pygame.KEYDOWN:
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                choice = ui.pause_hit_test(event.pos, pause_instructions)
+                if choice == "BACK":
+                    pause_instructions = False
+                elif choice == "RESTART":
+                    reset_game()
+                    event_phase = "player"
+                    paused = False
+                elif choice == "RESUME":
+                    paused = False
+                elif choice == "HOW TO PLAY":
+                    pause_instructions = True
+                elif choice == "MAIN MENU":
+                    paused = False
+                    game = None
+                    screen_manager.current_screen = "menu"
+                elif choice == "QUIT":
+                    running = False
+            elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
                 if pause_instructions:
-                    if event.key in (pygame.K_ESCAPE, pygame.K_BACKSPACE, pygame.K_RETURN):
-                        pause_instructions = False
+                    pause_instructions = False
                 else:
-                    if event.key in (pygame.K_UP, pygame.K_w):
-                        pause_selected = (pause_selected - 1) % 4
-                    elif event.key in (pygame.K_DOWN, pygame.K_s):
-                        pause_selected = (pause_selected + 1) % 4
-                    elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
-                        if pause_selected == 0:
-                            paused = False
-                        elif pause_selected == 1:
-                            pause_instructions = True
-                        elif pause_selected == 2:
-                            paused = False
-                            game = None
-                            screen_manager.current_screen = "menu"
-                        elif pause_selected == 3:
-                            running = False
+                    paused = False
             continue
 
         elif screen_manager.current_screen != "game":
@@ -914,6 +962,8 @@ while running:
         player.update(dt)
         zombies.update(dt)
 
+    check_zombie_encirclement()
+
     # A move's sound is made at the final destination once the animation ends.
     if game is not None and not paused and pending_movement_noise is not None and not player.is_moving:
         destination, style = pending_movement_noise
@@ -956,13 +1006,11 @@ while running:
         combat_events = zombies.take_turn(
             player.cell, interactables.hidden_in is not None,
             priority_noise=primary,
+            hide_escape=hide_turn_penalty,
         )
         # Do not remove activated devices yet: zombies still have walking/attack
         # animations to play, and the active artwork must be visible meanwhile.
-        # An Event 3 lock is active for two complete subsequent rounds.
-        # Age it ONLY after each corresponding Zombie Turn; the door opens
-        # before the third Player Turn begins. Independently track each door.
-        expire_event_locks_after_zombie_turn()
+        # Event locks expire after this Zombie Turn.
         event_noise_total = 0
         round_noise = 0                 # next round starts quiet
         noise_origin = player.cell
@@ -986,6 +1034,14 @@ while running:
             # GameState requires the Zombie Turn state before it can advance.
             game.current_turn = "zombie"
             game.end_zombie_turn()
+            if hide_turn_penalty and game.status == "playing":
+                # Hiding trades an entire extra round for immediate room evacuation.
+                game.round_number += 1
+                if game.round_number > game.max_rounds:
+                    game.lose_game("TIME_LIMIT")
+                else:
+                    game.actions_left = game.max_actions
+            hide_turn_penalty = False
             if game.status == "lost" and not end_screen_shown:
                 game.message = "TIME_LIMIT"
                 screen_manager.show_game_over("TIME_LIMIT")
@@ -1010,6 +1066,7 @@ while running:
     # the final zombie animation before showing the Game Master dice prompt.
     if (event_phase == "zombie" and game is not None
             and game.status == "playing" and not zombies.busy):
+        expire_event_locks_after_zombie_turn()  # unlock only AFTER zombie movement finishes
         inventory.finish_zombie_turn()  # remove device when Zombie Turn actually ends
         event_phase = "zombie_pause"
         zombie_phase_finished_at = pygame.time.get_ticks()
@@ -1118,6 +1175,7 @@ while running:
         interactables.draw(screen, MAP_X, MAP_Y, TILE_WIDTH, TILE_HEIGHT)
         draw_placed_noise_makers(screen)  # below Player sprite, so standing on it hides it
         draw_locked_door_overlays(screen)
+        draw_exit_marker(screen)
         zombies.draw_overlay(screen, get_cell_center)
         if not player.is_dead:
             draw_move_highlights(screen, player.cell)
