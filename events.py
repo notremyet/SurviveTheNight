@@ -87,7 +87,7 @@ class EventSystem:
                 )
             ):
                 zombie.face(player_cell)
-                zombie.lunge = 1.0
+                zombie.queue_attack(player_cell)
 
                 combat_events.append(
                     ZombieEvent(

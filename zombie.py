@@ -205,6 +205,9 @@ class Zombie:
         self.move_queue = deque()
         self.walk_time = 0.0
         self.lunge = 0.0          # 1 -> 0 while the attack plays
+        self.attack_queued = False  # wait for the last walk frame before attacking
+        self.attack_fx_ready = False
+        self.attack_target = None
         self.icon_pop = 0.0       # 1 -> 0 when "!" or "?" appears
         self.spawn_time = SPAWN_TIME
         self.steps_this_turn = 0
@@ -257,9 +260,15 @@ class Zombie:
     def turn_clockwise(self):
         self.facing = DIRS[(DIRS.index(self.facing) + 1) % 4]
 
+    def queue_attack(self, target):
+        """Show the bite only after reaching the adjacent tile visually."""
+        self.face(target)
+        self.attack_target = target
+        self.attack_queued = True
+
     @property
     def busy(self):
-        return bool(self.move_queue) or self.lunge > 0
+        return bool(self.move_queue) or self.attack_queued or self.lunge > 0
 
     def update(self, dt):
         if self.move_queue:
@@ -275,7 +284,13 @@ class Zombie:
                 self.draw_x += dx / dist * step
                 self.draw_y += dy / dist * step
             self.walk_time += dt
-        self.lunge = max(0.0, self.lunge - dt * 3)
+        # Walk animation finishes before the attack pose begins.
+        if not self.move_queue and self.attack_queued:
+            self.attack_queued = False
+            self.lunge = 1.0
+            self.attack_fx_ready = True
+        else:
+            self.lunge = max(0.0, self.lunge - dt * 3)
         self.icon_pop = max(0.0, self.icon_pop - dt * 4)
         self.spawn_time = max(0.0, self.spawn_time - dt)
 
@@ -385,42 +400,48 @@ class ZombieManager:
 
     # ---- AI
     def _zombie_turn(self, z, player_cell, hidden, heard, events, priority_noise=None):
-        # Blind AI: noise alone drives movement; no line-of-sight or red cone.
-        # A triggered remote takes priority and consumes the first TWO steps.
-        normal = max((n for n, r in heard if n.source != "noise_maker"),
+        """Move using only sound this zombie can hear through passable edges.
+
+        Logical positions are planned now; queue_attack delays the visual bite
+        until the zombie finishes drawing its queued movement path.
+        """
+        audible = [(noise, reach) for noise, reach in heard if z.cell in reach]
+        normal = max((n for n, _ in audible if n.source != "noise_maker"),
                      key=lambda n: n.loudness, default=None)
-        budget = max((int(n.loudness) for n, reach in heard), default=0)
+        budget = max((int(n.loudness) for n, _ in audible), default=0)
         maker_cell = priority_noise[0] if priority_noise is not None else None
-        if maker_cell is not None and budget > 0:
+        maker_audible = (maker_cell is not None and
+                         any(n.source == "noise_maker" and n.cell == maker_cell
+                             for n, _ in audible))
+        if maker_audible and budget > 0:
             maker_path = bfs_path(self.board, z.cell, maker_cell,
                                   set(getattr(self.furniture, "blocked_cells", set()))
                                   | {o.cell for o in self.zombies if o is not z}
                                   | {player_cell})
             if maker_path is not None:
                 self._set_state(z, INVESTIGATE, maker_cell, events)
-                for cell in maker_path[:2]:
+                # Approach the device within the current turn's movement budget.
+                for _ in range(min(budget, len(maker_path))):
                     nxt = self._next_step(z, maker_cell, player_cell)
                     if nxt is None:
                         break
                     z.step_to(nxt)
                 budget = max(0, budget - z.steps_this_turn)
-        # After the remote's first two steps, investigate the player's sound.
         if normal is not None and not hidden:
             self._set_state(z, INVESTIGATE, normal.cell, events)
             for _ in range(budget):
+                # A bite consumes one remaining movement step. An edge, not
+                # proximity alone, decides whether an attack is legal.
                 if self.board.can_step(z.cell, player_cell):
-                    z.face(player_cell)
-                    z.lunge = 1.0
-                    self._hits.append([player_cell, 0.0])
+                    z.queue_attack(player_cell)
                     events.append(ZombieEvent("attack", z, ATTACK_DAMAGE))
                     return
                 nxt = self._next_step(z, normal.cell, player_cell)
                 if nxt is None:
                     break
                 z.step_to(nxt)
-        elif maker_cell is None:
-            # Quiet round: blind zombies follow their predefined patrol route.
-            # Patrol is one valid grid step per zombie turn, never teleporting.
+        elif not maker_audible:
+            # No audible sound: follow the normal patrol, one grid step.
             self._set_state(z, PATROL, None, events)
             goal = self._goal(z)
             nxt = self._next_step(z, goal, player_cell)
@@ -503,6 +524,10 @@ class ZombieManager:
         dt = min(dt, 0.05)
         for z in self.zombies:
             z.update(dt)
+        for z in self.zombies:
+            if z.attack_fx_ready:
+                self._hits.append([z.attack_target, 0.0])
+                z.attack_fx_ready = False
         for ring in self._rings:
             ring[2] += dt
         self._rings = [r for r in self._rings if r[2] < 1.0]

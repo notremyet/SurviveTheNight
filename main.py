@@ -121,6 +121,8 @@ pending_movement_noise = None
 # Alarm Event 6 is heard in the following Zombie Turn.
 # Event 3 doors stay locked through TWO subsequent Player/Zombie turns.
 pending_event_sounds = []
+pending_zombie_damage = 0
+pending_event_attack_damage = 0
 temporary_event_locks = {}  # door edge -> remaining Zombie Turns (2, then 1)
 goal_hint = ""
 goal_hint_until = 0
@@ -368,9 +370,12 @@ def reset_game():
     global inventory_open, inventory_closed_for_round
     global loot_reveal_source, loot_reveal_received
     global pending_event_sounds, temporary_event_locks
+    global pending_zombie_damage, pending_event_attack_damage
 
     board = Board()
     pending_event_sounds = []
+    pending_zombie_damage = 0
+    pending_event_attack_damage = 0
     temporary_event_locks = {}
     player = Player(start_cell="B2")
     furniture = FurnitureManager(board, reserved={player.cell, EXIT_CELL})
@@ -751,6 +756,7 @@ def reveal_dice_result_immediately():
     """Roll exactly once and reveal the real result, skipping the spin animation."""
     global rolled_dice_value, event_result, round_noise, event_noise_total
     global pending_event_loot, event_phase, dice_result_until
+    global pending_event_attack_damage
     if event_phase not in ("roll", "rolling"):
         return
     # Choose and resolve the event once; keep its matching die face visible briefly.
@@ -778,9 +784,8 @@ def reveal_dice_result_immediately():
             if ev.kind == "attack"
         )
         if extra_damage:
-            sounds.play("zombie_attack")
-            sounds.play("hurt")
-            player.take_damage(extra_damage)
+            # Event 2 also waits until its attack animation reaches the player.
+            pending_event_attack_damage += extra_damage
     elif event_result.get("dice") == 5:
         item_result = event_result.get("item_result") or {}
         found = item_result.get("item")
@@ -1079,9 +1084,7 @@ while running:
             priority_noise=primary,
         )
         sounds.play("zombie_step")
-        if any(ev.kind == "attack" for ev in combat_events):
-            sounds.play("zombie_attack")
-        elif any(ev.kind == "spotted" for ev in combat_events):
+        if any(ev.kind == "spotted" for ev in combat_events):
             sounds.play("zombie_detect")
         # Do not remove activated devices yet: zombies still have walking/attack
         # animations to play, and the active artwork must be visible meanwhile.
@@ -1092,36 +1095,18 @@ while running:
         event_noise_total = 0
         round_noise = 0                 # next round starts quiet
         noise_origin = player.cell
-        total_damage = sum(ev.damage for ev in combat_events if ev.kind == "attack")
-        if total_damage:
-            lost = player.take_damage(total_damage)
-            if lost:
-                sounds.play("hurt")
-                interactables.message = f"Zombie attack! -{lost} HP"
-        elif any(ev.kind == "spotted" for ev in combat_events):
-            interactables.message = "A zombie spotted you!"
-        elif any(ev.kind == "heard" for ev in combat_events):
-            interactables.message = "Something heard that..."
-        # Complete the round through GameState, then reset ActionSystem only
-        # if the game is still active. This also enforces the 12-round limit.
-        if player.is_dead:
-            # Keep the map visible briefly after the fatal zombie hit.
-            event_phase = "death_pause"
-            death_pause_started_at = pygame.time.get_ticks()
-            interactables.message = "The zombie caught you..."
-        else:
-            # GameState requires the Zombie Turn state before it can advance.
-            game.current_turn = "zombie"
-            game.end_zombie_turn()
-            if game.status == "lost" and not end_screen_shown:
-                game.message = "TIME_LIMIT"
-                screen_manager.show_game_over("TIME_LIMIT")
-                end_screen_shown = True
-            elif game.status == "playing":
-                # Keep the board visible while zombies finish their movement/attack.
-                # The dice prompt appears only after the zombie phase is complete.
-                event_phase = "zombie"
-                zombie_phase_finished_at = None
+        # Damage is applied only AFTER the queued zombie walk/attack animation.
+        # A zombie's logical cell may reach the player while its drawing is
+        # still several tiles away, so damaging here would look like a ranged hit.
+        pending_zombie_damage = sum(ev.damage for ev in combat_events if ev.kind == "attack")
+        if not pending_zombie_damage:
+            if any(ev.kind == "spotted" for ev in combat_events):
+                interactables.message = "A zombie spotted you!"
+            elif any(ev.kind == "heard" for ev in combat_events):
+                interactables.message = "Something heard that..."
+        game.current_turn = "zombie"
+        event_phase = "zombie"
+        zombie_phase_finished_at = None
 
     # Give the fatal hit a moment on screen before showing Game Over.
     if (event_phase == "death_pause"
@@ -1137,9 +1122,29 @@ while running:
     # the final zombie animation before showing the Game Master dice prompt.
     if (event_phase == "zombie" and game is not None
             and game.status == "playing" and not zombies.busy):
-        inventory.finish_zombie_turn()  # remove device when Zombie Turn actually ends
-        event_phase = "zombie_pause"
-        zombie_phase_finished_at = pygame.time.get_ticks()
+        # At this point every planned movement and bite is visible and finished.
+        if pending_zombie_damage:
+            sounds.play("zombie_attack")
+            lost = player.take_damage(pending_zombie_damage)
+            if lost:
+                sounds.play("hurt")
+                interactables.message = f"Zombie attack! -{lost} HP"
+            pending_zombie_damage = 0
+        inventory.finish_zombie_turn()
+        if player.is_dead:
+            event_phase = "death_pause"
+            death_pause_started_at = pygame.time.get_ticks()
+            interactables.message = "The zombie caught you..."
+        else:
+            game.current_turn = "zombie"
+            game.end_zombie_turn()
+            if game.status == "lost" and not end_screen_shown:
+                game.message = "TIME_LIMIT"
+                screen_manager.show_game_over("TIME_LIMIT")
+                end_screen_shown = True
+            elif game.status == "playing":
+                event_phase = "zombie_pause"
+                zombie_phase_finished_at = pygame.time.get_ticks()
 
     if event_phase == "death_pause" and game is not None and not zombies.busy:
         inventory.finish_zombie_turn()
@@ -1154,10 +1159,20 @@ while running:
             pygame.time.get_ticks() - dice_roll_started >= DICE_ROLL_DURATION):
         reveal_dice_result_immediately()
 
-    if (event_phase == "dice_result" and
+    if (event_phase == "dice_result" and not zombies.busy and
             pygame.time.get_ticks() >= dice_result_until):
-        event_phase = "reveal"
-        event_reveal_until = pygame.time.get_ticks() + 4200
+        if pending_event_attack_damage:
+            sounds.play("zombie_attack")
+            lost = player.take_damage(pending_event_attack_damage)
+            if lost:
+                sounds.play("hurt")
+            pending_event_attack_damage = 0
+        if player.is_dead:
+            event_phase = "death_pause"
+            death_pause_started_at = pygame.time.get_ticks()
+        else:
+            event_phase = "reveal"
+            event_reveal_until = pygame.time.get_ticks() + 4200
 
     if event_phase == "reveal" and pygame.time.get_ticks() >= event_reveal_until:
         event_result = None
