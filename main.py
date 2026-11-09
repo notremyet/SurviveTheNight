@@ -25,7 +25,6 @@ from screen_manager import ScreenManager
 from events import EventSystem
 from item_use_ui import ItemUsePanel
 from item_animations import ItemUseAnimation
-from sound_manager import SoundManager
 
 pygame.init()
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
@@ -72,10 +71,19 @@ event_asset_dir = BASE_DIR / "assets" / "Itemcard"
 for dice_number in range(1, 7):
     event_path = event_asset_dir / f"e{dice_number}.png"
     if event_path.exists():
-        event_card_images[dice_number] = pygame.image.load(str(event_path)).convert_alpha()
-lock_path = event_asset_dir / "lock.png"
+        artwork = pygame.image.load(str(event_path)).convert_alpha()
+        visible = artwork.get_bounding_rect(min_alpha=8)
+        if visible.width and visible.height:
+            event_card_images[dice_number] = artwork.subsurface(visible).copy()
+# Add your own padlock artwork here. The original lock.png remains a fallback.
+# Use a transparent PNG with only the padlock (no chain).
+CUSTOM_PADLOCK_PATH = BASE_DIR / "assets" / "interactables" / "door_padlock.png"
+lock_path = CUSTOM_PADLOCK_PATH if CUSTOM_PADLOCK_PATH.exists() else event_asset_dir / "lock.png"
 if lock_path.exists():
-    lock_overlay = pygame.image.load(str(lock_path)).convert_alpha()
+    artwork = pygame.image.load(str(lock_path)).convert_alpha()
+    visible = artwork.get_bounding_rect(min_alpha=8)
+    if visible.width and visible.height:
+        lock_overlay = artwork.subsurface(visible).copy()
 
 ui = GameUI()
 item_use_panel = ItemUsePanel()
@@ -85,9 +93,9 @@ inventory_closed_for_round = False
 end_turn_button = pygame.Rect(WIDTH - 185, HEIGHT - 67, 160, 38)
 # The INVENTORY label is drawn by ui.GameUI in the bottom HUD.
 # Match its original position without modifying the teammate's ui.py.
-inventory_hud_button = pygame.Rect(24, HEIGHT - 82 + 31, 105, 30)
+# Entire inventory row is clickable; exclude the END TURN button on the right.
+inventory_hud_button = pygame.Rect(23, HEIGHT - 82 + 32, WIDTH - 230, 32)
 screen_manager = ScreenManager(screen)
-sound = SoundManager()
 game = None
 end_screen_shown = False
 paused = False
@@ -111,7 +119,7 @@ pending_movement_noise = None
 # Alarm Event 6 is heard in the following Zombie Turn.
 # Event 3 doors stay locked through TWO subsequent Player/Zombie turns.
 pending_event_sounds = []
-temporary_event_locks = {}  # door edge -> remaining Zombie Turns
+temporary_event_locks = {}  # door edge -> remaining Zombie Turns (2, then 1)
 goal_hint = ""
 goal_hint_until = 0
 
@@ -283,22 +291,29 @@ def draw_event_reveal(surface):
     shade = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
     shade.fill((0, 0, 0, 165))
     surface.blit(shade, (0, 0))
-    panel = pygame.Rect(WIDTH//2-220, HEIGHT//2-255, 440, 510)
+    panel_w, panel_h = 350, 440
+    panel = pygame.Rect((WIDTH-panel_w)//2, (HEIGHT-panel_h)//2,
+                        panel_w, panel_h)
     pygame.draw.rect(surface, (25,23,34), panel, border_radius=18)
     pygame.draw.rect(surface, (230,185,75), panel, 3, border_radius=18)
     if image:
-        max_size = (350, 350)
-        scaled = pygame.transform.smoothscale(image, max_size)
-        surface.blit(scaled, scaled.get_rect(center=(WIDTH//2, HEIGHT//2-35)))
+        # The supplied cards have large transparent margins. We crop those
+        # while loading, then scale the card itself without stretching it.
+        box_w, box_h = panel.width - 54, panel.height - 116
+        ratio = min(box_w / image.get_width(), box_h / image.get_height())
+        img_size = (max(1, round(image.get_width() * ratio)),
+                    max(1, round(image.get_height() * ratio)))
+        scaled = pygame.transform.smoothscale(image, img_size)
+        surface.blit(scaled, scaled.get_rect(center=(WIDTH//2, panel.y + 177)))
     else:
         title = pygame.font.SysFont("arial", 34, bold=True).render(f"EVENT {dice}", True, (255,220,100))
         surface.blit(title, title.get_rect(center=(WIDTH//2, HEIGHT//2-80)))
     msg = str(event_result.get("message", "Event resolved"))
-    font_obj = pygame.font.SysFont("arial", 20, bold=True)
+    font_obj = pygame.font.SysFont("arial", 18, bold=True)
     words, lines, current = msg.split(), [], ""
     for word in words:
         candidate = word if not current else current + " " + word
-        if font_obj.size(candidate)[0] <= 390:
+        if font_obj.size(candidate)[0] <= panel.width - 32:
             current = candidate
         else:
             if current: lines.append(current)
@@ -306,14 +321,21 @@ def draw_event_reveal(surface):
     if current: lines.append(current)
     for i, line in enumerate(lines[:3]):
         text_surface = font_obj.render(line, True, (245,245,245))
-        surface.blit(text_surface, text_surface.get_rect(center=(WIDTH//2, panel.bottom-70+i*25)))
+        surface.blit(text_surface, text_surface.get_rect(center=(WIDTH//2, panel.bottom-63+i*23)))
 
 
 def draw_locked_door_overlays(surface):
     if lock_overlay is None:
         return
-    size = max(24, int(TILE_WIDTH * 0.42))
-    sprite = pygame.transform.smoothscale(lock_overlay, (size, size))
+    # Change just this factor if your own padlock needs a small size adjustment.
+    max_side = max(26, int(TILE_WIDTH * 0.39))
+    scale = min(max_side / lock_overlay.get_width(),
+                max_side / lock_overlay.get_height())
+    sprite = pygame.transform.smoothscale(
+        lock_overlay,
+        (max(1, round(lock_overlay.get_width() * scale)),
+         max(1, round(lock_overlay.get_height() * scale))),
+    )
     # Event 3 artwork follows its active timer, never a stale lock/image.
     for locked_edge, remaining_turns in temporary_event_locks.items():
         if remaining_turns <= 0 or locked_edge not in board.locked:
@@ -342,10 +364,8 @@ def reset_game():
     global dice_roll_started, dice_result_until, rolled_dice_value
     global inventory_open, inventory_closed_for_round
     global loot_reveal_source, loot_reveal_received
-    global pending_event_sounds, temporary_event_locks, hide_turn_penalty
+    global pending_event_sounds, temporary_event_locks
 
-    hide_turn_penalty = False
-    sound.reset()
     board = Board()
     pending_event_sounds = []
     temporary_event_locks = {}
@@ -372,7 +392,7 @@ def reset_game():
             return None
         chosen = random.choice(available_doors)
         board.locked.add(chosen)
-        temporary_event_locks[chosen] = 1  # unlock after the next Zombie Turn
+        temporary_event_locks[chosen] = 2  # lock for the next two full player rounds
         return chosen
 
     event_system = EventSystem(
@@ -459,7 +479,6 @@ def use_inventory_slot(index):
                 item_use_panel.message = "Cannot place Noise Maker right now."
         else:
             player.play_action("noise", duration_ms=550)
-            sound.play("noise_maker")
             item_use_animation.start("place_noise_maker")
             item_use_panel.message = f"Noise Maker placed at {player.cell}. Remote {remote_id} ready."
     elif isinstance(item, dict) and item.get("type") == "remote":
@@ -586,7 +605,7 @@ def interact_with_current_tile():
 
     Existing chest/wardrobe rules and action costs remain unchanged.
     """
-    global escaped, end_screen_shown, hide_animation_until, round_noise, noise_origin, hide_turn_penalty
+    global escaped, end_screen_shown, hide_animation_until, round_noise, noise_origin
     if (game is None or game.status != "playing" or escaped or player.is_dead
             or player.is_moving or zombies.busy or inventory_open
             or event_phase != "player"):
@@ -607,7 +626,6 @@ def interact_with_current_tile():
     if interactables.hidden_in is not None:
         result = interactables.interact(player.cell)
         if result == "leave":
-            sound.play("wardrobe")
             hide_animation_until = 0
             player.play_action("hide", duration_ms=450)
             set_goal_hint("You left the wardrobe. Keep moving toward the exit.")
@@ -628,7 +646,6 @@ def interact_with_current_tile():
         else:
             result = interactables.interact(player.cell)
             if result == "chest_open":
-                sound.play("chest")
                 actions.spend("Search")
                 player.play_action("search", duration_ms=650)
                 round_noise += 1
@@ -654,11 +671,7 @@ def interact_with_current_tile():
                 interactables.message = "Chest already opened"
                 set_goal_hint("This chest has already been searched. Try another chest.")
             elif result == "hide":
-                sound.play("wardrobe")
                 actions.spend("Hide")
-                # Hiding immediately ends this player turn; the next round is forfeited.
-                hide_turn_penalty = True
-                actions.remaining = 0
                 player.play_action("hide", duration_ms=550)
                 hide_animation_until = pygame.time.get_ticks() + 550
                 set_goal_hint("You are hiding. Press E again to leave the wardrobe.")
@@ -684,6 +697,25 @@ def should_show_interact_prompt():
             and actions.can_act())
 
 
+def draw_exit_sign(surface):
+    """Permanent green EXIT sign, independent of Key and the E prompt."""
+    cx, _ = get_cell_center(EXIT_CELL)
+    _, gy = cell_to_xy(EXIT_CELL)
+    tile_top = MAP_Y + gy * TILE_HEIGHT
+    sign_w, sign_h = 56, 22
+    panel = pygame.Surface((sign_w, sign_h), pygame.SRCALPHA)
+    pygame.draw.rect(panel, (26, 117, 63, 205), panel.get_rect(), border_radius=5)
+    pygame.draw.rect(panel, (195, 255, 208, 205), panel.get_rect(), 1, border_radius=5)
+    letters = pygame.font.SysFont("arial", 15, bold=True).render("EXIT", True, (255,255,255))
+    panel.blit(letters, letters.get_rect(center=panel.get_rect().center))
+    # The map artwork draws its EXIT door at the *bottom edge* of I7.
+    # Position this sign just above the actual door, leaving a small gap.
+    # Door top is ~95.7% of the full map-image height (not the I7 tile top).
+    door_top = MAP_Y + round(MAP_HEIGHT * 0.957)
+    sign_y = door_top - sign_h - max(5, round(TILE_HEIGHT * 0.08))
+    surface.blit(panel, (round(cx-sign_w/2), round(sign_y)))
+
+
 def draw_interact_prompt(surface):
     """Small translucent E directly inside the current tile, no caption/arrow."""
     if not should_show_interact_prompt():
@@ -697,11 +729,62 @@ def draw_interact_prompt(surface):
     pygame.draw.rect(panel, (230, 230, 230, 145), panel.get_rect(), 1, border_radius=7)
     letter = pygame.font.SysFont("arial", 22, bold=True).render("E", True, (255, 255, 255))
     panel.blit(letter, letter.get_rect(center=panel.get_rect().center))
-    surface.blit(panel, (int(cx-prompt_width/2), int(tile_top+4)))
+    prompt_y = tile_top + (30 if player.cell == EXIT_CELL else 4)
+    surface.blit(panel, (int(cx-prompt_width/2), int(prompt_y)))
 
 
 hide_animation_until = 0
 pending_movement_noise = None
+def reveal_dice_result_immediately():
+    """Roll exactly once and reveal the real result, skipping the spin animation."""
+    global rolled_dice_value, event_result, round_noise, event_noise_total
+    global pending_event_loot, event_phase, dice_result_until
+    if event_phase not in ("roll", "rolling"):
+        return
+    # Choose and resolve the event once; keep its matching die face visible briefly.
+    rolled_dice_value = random.randint(1, 6)
+    event_result = event_system.roll_event(
+        player.cell,
+        interactables.hidden_in is not None,
+        dice=rolled_dice_value,
+    )
+    # The alarm happens after the zombie phase. Carry its +2 sound into
+    # the following player round, show it on the HUD, and let zombies
+    # hear it when that round ends (instead of discarding it immediately).
+    if event_result.get("dice") == 6 and event_result.get("success", True):
+        event_loudness = int(event_result.get("noise", 0))
+        event_cell = event_result.get("cell", player.cell)
+        round_noise += event_loudness
+        event_noise_total += event_loudness
+        pending_event_sounds.append((event_cell, event_loudness))
+    if event_result.get("dice") == 2:
+        extra_damage = sum(
+            ev.damage for ev in event_result.get("combat_events", [])
+            if ev.kind == "attack"
+        )
+        if extra_damage:
+            player.take_damage(extra_damage)
+    elif event_result.get("dice") == 5:
+        item_result = event_result.get("item_result") or {}
+        found = item_result.get("item")
+        received = bool(item_result.get("added_to_inventory", False))
+        if found is None:
+            event_result["message"] = "Random Item: supply pool exhausted."
+        elif found == ItemType.NOTHING:
+            event_result["message"] = "Random Item: Nothing (no item added)."
+            pending_event_loot = (found, False)
+        else:
+            event_result["message"] = (
+                f"Random Item: {get_item_name(found)} "
+                + ("ADDED TO INVENTORY" if received else "NOT ADDED")
+            )
+            pending_event_loot = (found, received)
+
+    event_phase = "dice_result"
+    dice_result_until = pygame.time.get_ticks() + DICE_RESULT_HOLD
+
+
+
 running = True
 
 while running:
@@ -730,7 +813,14 @@ while running:
         elif (screen_manager.current_screen == "game" and game is not None
               and game.status == "playing" and inventory_open and not paused):
             # Modal takes priority over movement, chest search and pause hotkeys.
-            if event.type == pygame.KEYDOWN:
+            if event.type == pygame.MOUSEMOTION:
+                hovered = item_use_panel.hit_test(event.pos, len(inventory.get_items()))
+                if hovered == "close":
+                    item_use_panel.selected_index = len(inventory.get_items())
+                elif isinstance(hovered, int):
+                    item_use_panel.selected_index = hovered
+                # Hover outside selectable rows keeps the previous selection.
+            elif event.type == pygame.KEYDOWN:
                 if event.key in (pygame.K_i, pygame.K_ESCAPE):
                     close_inventory_phase()
                 elif event.key in (pygame.K_UP, pygame.K_DOWN):
@@ -771,23 +861,19 @@ while running:
                         pause_instructions = False
                 else:
                     if event.key in (pygame.K_UP, pygame.K_w):
-                        pause_selected = (pause_selected - 1) % 5
+                        pause_selected = (pause_selected - 1) % 4
                     elif event.key in (pygame.K_DOWN, pygame.K_s):
-                        pause_selected = (pause_selected + 1) % 5
+                        pause_selected = (pause_selected + 1) % 4
                     elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
-                        if pause_selected == 0:  # RESTART
-                            reset_game()
-                            event_phase = "player"
+                        if pause_selected == 0:
                             paused = False
-                        elif pause_selected == 1:  # RESUME
-                            paused = False
-                        elif pause_selected == 2:
+                        elif pause_selected == 1:
                             pause_instructions = True
-                        elif pause_selected == 3:
+                        elif pause_selected == 2:
                             paused = False
                             game = None
                             screen_manager.current_screen = "menu"
-                        elif pause_selected == 4:
+                        elif pause_selected == 3:
                             running = False
             continue
 
@@ -815,9 +901,9 @@ while running:
             # ENTER performs exactly ONE step in the current Event modal.
             # Inventory and pause are handled above and always take priority.
             if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
-                if event_phase == "roll" and game.status == "playing":
-                    dice_roll_started = pygame.time.get_ticks()
-                    event_phase = "rolling"
+                if event_phase in ("roll", "rolling") and game.status == "playing":
+                    # ENTER skips animation and reveals the actual random result.
+                    reveal_dice_result_immediately()
                     continue
                 if event_phase == "reveal":
                     event_reveal_until = pygame.time.get_ticks()
@@ -932,7 +1018,6 @@ while running:
     # A move's sound is made at the final destination once the animation ends.
     if game is not None and not paused and pending_movement_noise is not None and not player.is_moving:
         destination, style = pending_movement_noise
-        sound.play(style)
         if style == "run":
             round_noise += 2
             noise_origin = destination
@@ -972,11 +1057,13 @@ while running:
         combat_events = zombies.take_turn(
             player.cell, interactables.hidden_in is not None,
             priority_noise=primary,
-            hide_escape=hide_turn_penalty,
         )
         # Do not remove activated devices yet: zombies still have walking/attack
         # animations to play, and the active artwork must be visible meanwhile.
-        # Event locks expire after this Zombie Turn.
+        # An Event 3 lock is active for two complete subsequent rounds.
+        # Age it ONLY after each corresponding Zombie Turn; the door opens
+        # before the third Player Turn begins. Independently track each door.
+        expire_event_locks_after_zombie_turn()
         event_noise_total = 0
         round_noise = 0                 # next round starts quiet
         noise_origin = player.cell
@@ -984,8 +1071,6 @@ while running:
         if total_damage:
             lost = player.take_damage(total_damage)
             if lost:
-                sound.play("hurt")
-                sound.play("zombie_attack")
                 interactables.message = f"Zombie attack! -{lost} HP"
         elif any(ev.kind == "spotted" for ev in combat_events):
             interactables.message = "A zombie spotted you!"
@@ -1002,14 +1087,6 @@ while running:
             # GameState requires the Zombie Turn state before it can advance.
             game.current_turn = "zombie"
             game.end_zombie_turn()
-            if hide_turn_penalty and game.status == "playing":
-                # Hiding trades an entire extra round for immediate room evacuation.
-                game.round_number += 1
-                if game.round_number > game.max_rounds:
-                    game.lose_game("TIME_LIMIT")
-                else:
-                    game.actions_left = game.max_actions
-            hide_turn_penalty = False
             if game.status == "lost" and not end_screen_shown:
                 game.message = "TIME_LIMIT"
                 screen_manager.show_game_over("TIME_LIMIT")
@@ -1034,7 +1111,6 @@ while running:
     # the final zombie animation before showing the Game Master dice prompt.
     if (event_phase == "zombie" and game is not None
             and game.status == "playing" and not zombies.busy):
-        expire_event_locks_after_zombie_turn()  # unlock only AFTER zombie movement finishes
         inventory.finish_zombie_turn()  # remove device when Zombie Turn actually ends
         event_phase = "zombie_pause"
         zombie_phase_finished_at = pygame.time.get_ticks()
@@ -1050,48 +1126,7 @@ while running:
 
     if (event_phase == "rolling" and
             pygame.time.get_ticks() - dice_roll_started >= DICE_ROLL_DURATION):
-        # Choose and resolve the event once; keep its matching die face visible briefly.
-        rolled_dice_value = random.randint(1, 6)
-        event_result = event_system.roll_event(
-            player.cell,
-            interactables.hidden_in is not None,
-            dice=rolled_dice_value,
-        )
-        # The alarm happens after the zombie phase. Carry its +2 sound into
-        # the following player round, show it on the HUD, and let zombies
-        # hear it when that round ends (instead of discarding it immediately).
-        if event_result.get("dice") == 6 and event_result.get("success", True):
-            event_loudness = int(event_result.get("noise", 0))
-            event_cell = event_result.get("cell", player.cell)
-            round_noise += event_loudness
-            event_noise_total += event_loudness
-            pending_event_sounds.append((event_cell, event_loudness))
-        if event_result.get("dice") == 2:
-            extra_damage = sum(
-                ev.damage for ev in event_result.get("combat_events", [])
-                if ev.kind == "attack"
-            )
-            if extra_damage:
-                player.take_damage(extra_damage)
-        elif event_result.get("dice") == 5:
-            item_result = event_result.get("item_result") or {}
-            found = item_result.get("item")
-            received = bool(item_result.get("added_to_inventory", False))
-            if found is None:
-                event_result["message"] = "Random Item: supply pool exhausted."
-            elif found == ItemType.NOTHING:
-                event_result["message"] = "Random Item: Nothing (no item added)."
-                pending_event_loot = (found, False)
-            else:
-                event_result["message"] = (
-                    f"Random Item: {get_item_name(found)} "
-                    + ("ADDED TO INVENTORY" if received else "NOT ADDED")
-                )
-                pending_event_loot = (found, received)
-
-        sound.play("event")
-        event_phase = "dice_result"
-        dice_result_until = pygame.time.get_ticks() + DICE_RESULT_HOLD
+        reveal_dice_result_immediately()
 
     if (event_phase == "dice_result" and
             pygame.time.get_ticks() >= dice_result_until):
@@ -1151,6 +1186,7 @@ while running:
                 pygame.time.get_ticks() < hide_animation_until):
             player.draw(screen, get_cell_center)
         zombies.draw(screen, get_cell_center)
+        draw_exit_sign(screen)
         draw_interact_prompt(screen)
 
         # Keep GameState synchronized with the systems that own live gameplay data.
@@ -1224,7 +1260,6 @@ while running:
     else:
         screen_manager.draw()
 
-    sound.sync(screen_manager.current_screen, paused, game.status if game is not None else "menu")
     pygame.display.flip()
 
 pygame.quit()

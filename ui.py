@@ -50,7 +50,8 @@ class GameUI:
         self.draw_text(screen, "GOAL", 155, bottom_y + 10,
                        self.small_font, self.colors["yellow"])
         goal_text = goal or "Search chests, find the key and escape through I7."
-        # Keep goal text inside its allocated area, away from END TURN.
+        # Keep the original horizontal columns; only lift the green turn
+        # status from the lower Inventory row to the NOISE/GOAL row.
         def fit_text(text, font, max_width):
             text = str(text)
             if font.size(text)[0] <= max_width:
@@ -59,42 +60,34 @@ class GameUI:
                 text = text[:-1]
             return text.rstrip() + "..."
 
-        self.draw_text(screen, fit_text(goal_text, self.small_font, WIDTH - 425),
+        self.draw_text(screen, fit_text(goal_text, self.small_font, 275),
                        205, bottom_y + 10, self.small_font, self.colors["white"])
+        if message:
+            # END TURN starts at WIDTH-185; leave a clear gap before it.
+            available = max(10, WIDTH - 185 - 500 - 18)
+            self.draw_text(screen, fit_text(message, self.small_font, available),
+                           500, bottom_y + 10, self.small_font, self.colors["green"])
         self.draw_text(screen, "INVENTORY", 30, bottom_y + 37,
                        self.small_font, self.colors["muted"])
         items = items or []
-        item_text = "  |  ".join(str(item) for item in items[:5]) if items else "Empty"
+        item_text = "  |  ".join(str(item) for item in items[:5]) if items else "-"
         self.draw_text(screen, fit_text(item_text, self.small_font, 355),
                        135, bottom_y + 37, self.small_font, self.colors["white"])
-        # Reserve the bottom-right 185 pixels for the END TURN button.
-        if message:
-            msg_text = fit_text(message, self.small_font, 290)
-            msg = self.small_font.render(msg_text, True, self.colors["green"])
-            screen.blit(msg, (500, bottom_y + 39))
-
-    def pause_hit_test(self, pos, show_instructions=False):
-        """Return the clicked pause action, or None."""
-        panel = pygame.Rect(WIDTH // 2 - 260, HEIGHT // 2 - 220, 520, 440)
-        if show_instructions:
-            back = pygame.Rect(panel.x + 25, panel.bottom - 60, 190, 45)
-            return "BACK" if back.collidepoint(pos) else None
-        for i, option in enumerate(("RESTART", "RESUME", "HOW TO PLAY", "MAIN MENU", "QUIT")):
-            rect = pygame.Rect(panel.x + 45, panel.y + 77 + i * 65, 430, 50)
-            if rect.collidepoint(pos):
-                return option
-        return None
+        # Reserve the bottom-right 185 pixels for END TURN.
+        # The Inventory row (label + items + blank space) is mouse-clickable.
 
     def draw_pause(self, screen, selected=0, show_instructions=False):
         shade = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
         shade.fill((0, 0, 0, 190))
         screen.blit(shade, (0, 0))
-        panel = pygame.Rect(WIDTH // 2 - 260, HEIGHT // 2 - 220, 520, 440)
+        panel = pygame.Rect(WIDTH // 2 - 260, HEIGHT // 2 - 220,
+                            520, 440 if show_instructions else 360)
         self.draw_panel(screen, panel)
-        mouse = pygame.mouse.get_pos()
+        title = "HOW TO PLAY" if show_instructions else "PAUSED"
+        title_surface = self.title_font.render(title, True, self.colors["yellow"])
+        screen.blit(title_surface, title_surface.get_rect(
+            center=(WIDTH // 2, panel.y + 45)))
         if show_instructions:
-            heading = self.title_font.render("HOW TO PLAY", True, self.colors["yellow"])
-            screen.blit(heading, heading.get_rect(center=(WIDTH // 2, panel.y + 43)))
             lines = [
                 "Click a yellow tile: walk 1 tile",
                 "Click a white tile: run 2 tiles",
@@ -102,26 +95,22 @@ class GameUI:
                 "Stand at a wardrobe and press E: hide",
                 "Press E again to leave a wardrobe",
                 "Find the key, reach exit I7, then press E",
+                "Press ESC to return to the pause menu",
             ]
-            for i, line in enumerate(lines):
-                self.draw_text(screen, line, panel.x + 35, panel.y + 95 + i * 39, self.body_font)
-            back = pygame.Rect(panel.x + 25, panel.bottom - 60, 190, 45)
-            hovered = back.collidepoint(mouse)
-            pygame.draw.rect(screen, (65, 56, 45) if hovered else (40, 40, 50), back, border_radius=8)
-            self.draw_text(screen, "BACK", back.x + 58, back.y + 10,
-                           self.title_font, self.colors["yellow"] if hovered else self.colors["white"])
+            y = panel.y + 100
+            for line in lines:
+                self.draw_text(screen, line, panel.x + 35, y, self.body_font)
+                y += 36
+            self.draw_text(screen, "ESC  -  BACK", panel.x + 35,
+                           panel.bottom - 45, self.small_font, self.colors["yellow"])
         else:
-            pause_font = pygame.font.SysFont("arial", 48, bold=True)
-            title = pause_font.render("PAUSE", True, (255, 55, 65))
-            screen.blit(title, title.get_rect(center=(WIDTH // 2, panel.y + 43)))
-            options = ("RESTART", "RESUME", "HOW TO PLAY", "MAIN MENU", "QUIT")
+            options = ["RESUME", "HOW TO PLAY", "MAIN MENU", "QUIT"]
+            y = panel.y + 110
             for i, label in enumerate(options):
-                rect = pygame.Rect(panel.x + 45, panel.y + 77 + i * 65, 430, 50)
-                hovered = rect.collidepoint(mouse)
-                if hovered:
-                    pygame.draw.rect(screen, (58, 49, 45), rect, border_radius=8)
-                color = self.colors["yellow"] if hovered else self.colors["white"]
-                rendered = self.title_font.render(label, True, color)
-                screen.blit(rendered, rendered.get_rect(center=rect.center))
-            hint = self.small_font.render("Click an option to select", True, self.colors["muted"])
-            screen.blit(hint, hint.get_rect(center=(WIDTH // 2, panel.bottom - 18)))
+                color = self.colors["yellow"] if i == selected else self.colors["white"]
+                text = self.title_font.render(label, True, color)
+                screen.blit(text, text.get_rect(center=(WIDTH // 2, y)))
+                y += 65
+            self.draw_text(screen, "UP / DOWN to select  -  ENTER to confirm",
+                           panel.x + 45, panel.bottom - 38,
+                           self.small_font, self.colors["muted"])

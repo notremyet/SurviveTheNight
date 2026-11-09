@@ -81,7 +81,7 @@ class ItemUsePanel:
                 title = get_item_name(item)
             label(f"{'>' if selected else ' '} {i+1}. {title}", rect.x+12, rect.y+6)
         if not items:
-            label("Inventory empty", box.x+30, box.y+148, (190, 190, 200))
+            label("-", box.x+30, box.y+148, (190, 190, 200))
 
         msg_y = box.bottom - 98
         label(self.message[:75], box.x+28, msg_y, (168, 219, 163))
