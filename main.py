@@ -143,6 +143,7 @@ pending_movement_noise = None
 pending_event_sounds = []
 pending_zombie_damage = 0
 pending_event_attack_damage = 0
+hide_escape_action_penalty = 0  # Deduct once from the next player round after an evacuation.
 temporary_event_locks = {}  # door edge -> remaining Zombie Turns (2, then 1)
 goal_hint = ""
 goal_hint_until = 0
@@ -400,12 +401,17 @@ def reset_game():
     global loot_reveal_source, loot_reveal_received
     global pending_event_sounds, temporary_event_locks
     global pending_zombie_damage, pending_event_attack_damage
+    global zombie_phase_finished_at, death_pause_started_at
+    global hide_escape_action_penalty
 
     board = Board()
     pending_event_sounds = []
     pending_zombie_damage = 0
     pending_event_attack_damage = 0
+    hide_escape_action_penalty = 0
     temporary_event_locks = {}
+    zombie_phase_finished_at = None
+    death_pause_started_at = None
     player = Player(start_cell="B2")
     furniture = FurnitureManager(board, reserved={player.cell, EXIT_CELL})
     interactables = InteractableManager()
@@ -457,6 +463,13 @@ def reset_game():
     paused = False
     pause_selected = 0
     pause_instructions = False
+    event_phase = "player"
+    event_result = None
+    event_reveal_until = 0
+    dice_roll_started = 0
+    dice_result_until = 0
+    rolled_dice_value = None
+    pending_event_loot = None
 
 
 def expire_event_locks_after_zombie_turn():
@@ -917,26 +930,24 @@ while running:
             continue
 
         elif screen_manager.current_screen == "game" and paused:
-            if event.type == pygame.KEYDOWN:
-                if pause_instructions:
-                    if event.key in (pygame.K_ESCAPE, pygame.K_BACKSPACE, pygame.K_RETURN):
-                        pause_instructions = False
-                else:
-                    if event.key in (pygame.K_UP, pygame.K_w):
-                        pause_selected = (pause_selected - 1) % 4
-                    elif event.key in (pygame.K_DOWN, pygame.K_s):
-                        pause_selected = (pause_selected + 1) % 4
-                    elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
-                        if pause_selected == 0:
-                            paused = False
-                        elif pause_selected == 1:
-                            pause_instructions = True
-                        elif pause_selected == 2:
-                            paused = False
-                            game = None
-                            screen_manager.current_screen = "menu"
-                        elif pause_selected == 3:
-                            running = False
+            if pause_instructions:
+                if (event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE) or (event.type == pygame.MOUSEBUTTONDOWN and event.button == 1):
+                    pause_instructions = False
+            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                choice = ui.pause_hit_test(event.pos)
+                if choice == "RESTART":
+                    reset_game()
+                    intro.start()
+                elif choice == "RESUME":
+                    paused = False
+                elif choice == "HOW TO PLAY":
+                    pause_instructions = True
+                elif choice == "MAIN MENU":
+                    paused = False
+                    game = None
+                    screen_manager.current_screen = "menu"
+                elif choice == "QUIT":
+                    running = False
             continue
 
         elif screen_manager.current_screen != "game":
@@ -1132,11 +1143,31 @@ while running:
         # If multiple remotes are active, the first one activated has priority;
         # preserve the others as sounds (the current rules do not define ties).
         primary = (activated[0]["cell"], round_noise) if activated and round_noise > 0 else None
-        combat_events = zombies.take_turn(
-            player.cell, interactables.hidden_in is not None,
-            priority_noise=primary,
+        # Wardrobe escape rule: if a zombie shares the hiding room, it must
+        # leave via a legal path during this Zombie Turn, regardless of noise.
+        # A successful evacuation costs ONE action in the NEXT player round.
+        hidden = interactables.hidden_in is not None
+        hiding_room = zombies._room_for(player.cell) if hidden else None
+        zombies_in_room_before = (
+            {id(z) for z in zombies.zombies if zombies._room_for(z.cell) == hiding_room}
+            if hiding_room is not None else set()
         )
-        sounds.play("zombie_step")
+        combat_events = zombies.take_turn(
+            player.cell, hidden,
+            priority_noise=primary,
+            hide_escape=hidden,
+        )
+        if zombies_in_room_before and any(
+            id(z) in zombies_in_room_before
+            and zombies._room_for(z.cell) != hiding_room
+            for z in zombies.zombies
+        ):
+            hide_escape_action_penalty = 1  # Charged once, even if multiple zombies leave.
+            interactables.message = "Zombies evacuated the room! Next round: -1 Action."
+
+        # Play the running footsteps for each zombie movement phase.
+        if any(z.steps_this_turn for z in zombies.zombies):
+            sounds.play("zombie_step")
         if any(ev.kind == "spotted" for ev in combat_events):
             sounds.play("zombie_detect")
         # Do not remove activated devices yet: zombies still have walking/attack
@@ -1160,6 +1191,25 @@ while running:
         game.current_turn = "zombie"
         event_phase = "zombie"
         zombie_phase_finished_at = None
+
+    # A player who is boxed in by zombies loses immediately, even with HP.
+    # Check after zombie movement animations so the result matches the board.
+    # Walls/furniture alone do not count as a zombie trap.
+    if (screen_manager.current_screen == "game" and game is not None
+            and game.status == "playing" and not paused and not player.is_moving
+            and not zombies.busy and interactables.hidden_in is None
+            and event_phase in ("player", "zombie", "zombie_pause")):
+        zombie_cells = {z.cell for z in zombies.zombies}
+        legal_exits = [cell for cell in board.neighbors(player.cell)
+                       if not furniture.is_blocked(cell)]
+        if (legal_exits and any(cell in zombie_cells for cell in legal_exits)
+                and all(cell in zombie_cells for cell in legal_exits)):
+            game.lose_game("TRAPPED_BY_ZOMBIES")
+            screen_manager.show_game_over("TRAPPED_BY_ZOMBIES")
+            end_screen_shown = True
+            event_phase = "death_pause"
+            pending_zombie_damage = 0
+            death_pause_started_at = None
 
     # Give the fatal hit a moment on screen before showing Game Over.
     if (event_phase == "death_pause"
@@ -1248,6 +1298,10 @@ while running:
                     end_screen_shown = True
             else:
                 actions.next_round()
+                if hide_escape_action_penalty:
+                    actions.remaining = max(0, actions.remaining - hide_escape_action_penalty)
+                    actions.last_action = "Wardrobe escape penalty"
+                    hide_escape_action_penalty = 0
                 inventory_closed_for_round = False
                 # Unused Remotes remain in the bag. The player may press I
                 # before taking actions, but there is no forced popup.
@@ -1264,6 +1318,10 @@ while running:
                 end_screen_shown = True
         else:
             actions.next_round()
+            if hide_escape_action_penalty:
+                actions.remaining = max(0, actions.remaining - hide_escape_action_penalty)
+                actions.last_action = "Wardrobe escape penalty"
+                hide_escape_action_penalty = 0
             inventory_closed_for_round = False
             # Remote stays available via I; never open the bag automatically.
         # Keep any event-generated noise for the next player round.

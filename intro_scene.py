@@ -1,6 +1,6 @@
 """Visual novel intro for Survive The Night.
 
-Drop this file beside main.py. Images: assets/intro/1.png ... 3.png
+Images: assets/intro/1.png ... 3.png
 Music: assets/sounds/introsound.mp3
 """
 from pathlib import Path
@@ -9,24 +9,15 @@ import pygame
 BASE = Path(__file__).resolve().parent
 
 SCENES = [
-    (
-        "A young boy slowly opened his eyes, only to find himself lying in a bedroom he had never seen before. "
-        "He tried to remember how he had arrived at this unfamiliar house, but his mind was completely blank. "
-        "The silence surrounding him felt strangely unnatural, as though the entire world had suddenly stopped moving. "
-        "Confused and uneasy, he slowly sat up on the bed, unaware of the nightmare waiting beyond the walls."
-    ),
-    (
-        "Hoping to find someone who could explain what was happening, he cautiously turned his attention toward the bedroom window. "
-        "Outside, several figures wandered aimlessly through the darkness, moving in ways that no ordinary human ever would. "
-        "As he looked more closely, a terrifying realization began to settle in: the people outside were no longer human. "
-        "The familiar world he remembered had transformed into something completely unrecognizable."
-    ),
-    (
-        "Before he could fully understand the horrifying scene outside, an unexpected sound suddenly broke the silence around him. "
-        "Slow, heavy footsteps echoed through the hallway, growing louder as something moved somewhere inside the house. "
-        "His heart began racing when he realized that he was not alone, and whatever was approaching might already know he was there. "
-        "There was no time to hesitate; he needed to search for a way out of this unfamiliar house before it was too late."
-    ),
+    ("A young boy woke up in a strange bedroom with no memory "
+     "of how he got there. The house was unusually quiet, "
+     "making him feel that something was wrong."),
+    ("He looked out the window and saw people wandering "
+     "through the dark streets. As he watched them move, "
+     "he realized they were zombies and the world had changed."),
+    ("Suddenly, he heard strange footsteps coming from another "
+     "room. Realizing he was not alone in the house, "
+     "he knew he had to find a way out before it was too late."),
 ]
 
 
@@ -44,10 +35,14 @@ class IntroScene:
         self.skip_rect = pygame.Rect(size[0] - 125, 22, 102, 42)
         self._music_started = False
         self._wrapped = []
-        self._line_height = 28
+        self._line_height = 25
+
+    def _box(self):
+        w, h = self.size
+        box_h = min(165, max(118, int(h * 0.17)))
+        return pygame.Rect(19, h - box_h - 18, w - 38, box_h)
 
     def _wrap(self, text, max_width):
-        """Wrap at word boundaries based on actual font measurements."""
         result = []
         for paragraph in text.split('\n'):
             words = paragraph.split()
@@ -66,22 +61,19 @@ class IntroScene:
         return result
 
     def _layout_scene(self):
-        w, h = self.size
-        box_h = min(330, max(235, int(h * 0.34)))
-        box = pygame.Rect(19, h - box_h - 18, w - 38, box_h)
+        box = self._box()
         text_width = box.width - 56
-        available_height = box.height - 105  # leave room for page and continue prompt
-        # Choose the largest legible font that fits the current scene vertically.
-        for font_size in (23, 22, 21, 20, 19, 18):
+        available_height = box.height - 60
+        for font_size in (23, 22, 21, 20, 19, 18, 17, 16):
             self.font = pygame.font.SysFont('arial', font_size)
             lines = self._wrap(SCENES[self.index], text_width)
-            line_height = font_size + 8
+            line_height = font_size + 5
             if len(lines) * line_height <= available_height:
                 self._wrapped = lines
                 self._line_height = line_height
                 return
         self._wrapped = self._wrap(SCENES[self.index], text_width)
-        self._line_height = 25
+        self._line_height = 21
 
     def start(self):
         self.index = 0
@@ -163,25 +155,21 @@ class IntroScene:
         if not self.active:
             return
         self._advance_typewriter()
-        w, h = self.size
         image = self.images[self.index] if self.images else None
         if image is None:
             screen.fill((21, 20, 30))
         else:
             screen.blit(image, (0, 0))
 
-        box_h = min(330, max(235, int(h * 0.34)))
-        box = pygame.Rect(19, h - box_h - 18, w - 38, box_h)
+        box = self._box()
         panel = pygame.Surface(box.size, pygame.SRCALPHA)
         panel.fill((12, 13, 24, 229))
         screen.blit(panel, box.topleft)
         pygame.draw.rect(screen, (160, 152, 175), box, 2, border_radius=12)
 
-        # Reveal the original text one character at a time, while displaying
-        # pre-wrapped lines without making words jump during typing.
         remaining = int(self.chars_visible)
         x = box.left + 28
-        y = box.top + 22
+        y = box.top + 14
         for line in self._wrapped:
             if remaining <= 0:
                 break
@@ -190,7 +178,7 @@ class IntroScene:
             screen.blit(rendered, (x, y))
             remaining -= len(line)
             if remaining > 0:
-                remaining -= 1  # space between wrapped lines
+                remaining -= 1
             y += self._line_height
 
         hover = self.skip_rect.collidepoint(pygame.mouse.get_pos())
@@ -200,8 +188,8 @@ class IntroScene:
         screen.blit(skip, skip.get_rect(center=self.skip_rect.center))
 
         page = self.ui_font.render(f'{self.index + 1} / 3', True, (220, 217, 226))
-        screen.blit(page, (box.left + 28, box.bottom - 37))
+        screen.blit(page, (box.left + 28, box.bottom - 30))
         if self._complete():
             hint_text = 'CLICK TO START' if self.index == 2 else 'CLICK TO CONTINUE'
             hint = self.ui_font.render(hint_text + '  >', True, (235, 230, 238))
-            screen.blit(hint, hint.get_rect(bottomright=(box.right - 25, box.bottom - 17)))
+            screen.blit(hint, hint.get_rect(bottomright=(box.right - 25, box.bottom - 12)))

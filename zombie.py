@@ -400,52 +400,60 @@ class ZombieManager:
 
     # ---- AI
     def _zombie_turn(self, z, player_cell, hidden, heard, events, priority_noise=None):
-        """Move using only sound this zombie can hear through passable edges.
-
-        Logical positions are planned now; queue_attack delays the visual bite
-        until the zombie finishes drawing its queued movement path.
+        """Blind AI: follow the player's noise with exactly that many steps;
+        otherwise follow the normal patrol route by one tile.
+        Noise makers receive priority for the first two available steps.
         """
-        audible = [(noise, reach) for noise, reach in heard if z.cell in reach]
-        normal = max((n for n, _ in audible if n.source != "noise_maker"),
-                     key=lambda n: n.loudness, default=None)
-        budget = max((int(n.loudness) for n, _ in audible), default=0)
+        # Gameplay rule: Noise is a GLOBAL movement budget, not a hearing
+        # radius. Even a distant zombie takes N steps towards the source.
+        # A remote noise maker takes priority for the first two steps.
+        noises = [n for n, _ in heard]
+        player_sounds = [n for n in noises if n.source != "noise_maker"]
+        budget = max((int(n.loudness) for n in noises), default=0)
         maker_cell = priority_noise[0] if priority_noise is not None else None
-        maker_audible = (maker_cell is not None and
-                         any(n.source == "noise_maker" and n.cell == maker_cell
-                             for n, _ in audible))
-        if maker_audible and budget > 0:
-            maker_path = bfs_path(self.board, z.cell, maker_cell,
-                                  set(getattr(self.furniture, "blocked_cells", set()))
-                                  | {o.cell for o in self.zombies if o is not z}
-                                  | {player_cell})
-            if maker_path is not None:
-                self._set_state(z, INVESTIGATE, maker_cell, events)
-                # Approach the device within the current turn's movement budget.
-                for _ in range(min(budget, len(maker_path))):
-                    nxt = self._next_step(z, maker_cell, player_cell)
-                    if nxt is None:
-                        break
-                    z.step_to(nxt)
-                budget = max(0, budget - z.steps_this_turn)
-        if normal is not None and not hidden:
-            self._set_state(z, INVESTIGATE, normal.cell, events)
+        maker_audible = any(n.source == "noise_maker" and n.cell == maker_cell
+                            for n in noises)
+        if budget <= 0:
+            self._set_state(z, PATROL, None, events)
+            nxt = self._next_step(z, self._goal(z), player_cell)
+            if nxt is not None:
+                z.step_to(nxt)
+            return
+
+        if maker_audible:
+            self._set_state(z, INVESTIGATE, maker_cell, events)
+            for _ in range(min(2, budget)):
+                nxt = self._next_step(z, maker_cell, player_cell)
+                if nxt is None:
+                    break
+                z.step_to(nxt)
+            budget -= z.steps_this_turn
+
+        # A sound points to the player's current location, rather than the
+        # tile where they last ran. Hidden players cannot be tracked this way.
+        if player_sounds and not hidden and budget > 0:
+            self._set_state(z, INVESTIGATE, player_cell, events)
             for _ in range(budget):
-                # A bite consumes one remaining movement step. An edge, not
-                # proximity alone, decides whether an attack is legal.
                 if self.board.can_step(z.cell, player_cell):
                     z.queue_attack(player_cell)
                     events.append(ZombieEvent("attack", z, ATTACK_DAMAGE))
                     return
-                nxt = self._next_step(z, normal.cell, player_cell)
+                nxt = self._next_step(z, player_cell, player_cell)
                 if nxt is None:
                     break
                 z.step_to(nxt)
-        elif not maker_audible:
-            # No audible sound: follow the normal patrol, one grid step.
-            self._set_state(z, PATROL, None, events)
-            goal = self._goal(z)
-            nxt = self._next_step(z, goal, player_cell)
-            if nxt is not None:
+        elif not maker_audible and not hidden:
+            # No direct player sound, but a nonzero event noise still draws
+            # zombies towards the player's position for the remaining budget.
+            self._set_state(z, INVESTIGATE, player_cell, events)
+            for _ in range(budget):
+                if self.board.can_step(z.cell, player_cell):
+                    z.queue_attack(player_cell)
+                    events.append(ZombieEvent("attack", z, ATTACK_DAMAGE))
+                    return
+                nxt = self._next_step(z, player_cell, player_cell)
+                if nxt is None:
+                    break
                 z.step_to(nxt)
 
     def _set_state(self, z, state, target, events):

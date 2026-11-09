@@ -76,18 +76,26 @@ class GameUI:
         # Reserve the bottom-right 185 pixels for END TURN.
         # The Inventory row (label + items + blank space) is mouse-clickable.
 
+    def pause_layout(self):
+        panel = pygame.Rect(WIDTH // 2 - 300, HEIGHT // 2 - 250, 600, 500)
+        labels = ["RESTART", "RESUME", "HOW TO PLAY", "MAIN MENU", "QUIT"]
+        buttons = [pygame.Rect(panel.left + 52, panel.top + 100 + i * 68,
+                               panel.width - 104, 52) for i in range(len(labels))]
+        return panel, list(zip(labels, buttons))
+
+    def pause_hit_test(self, pos):
+        _, options = self.pause_layout()
+        return next((label for label, rect in options if rect.collidepoint(pos)), None)
+
     def draw_pause(self, screen, selected=0, show_instructions=False):
         shade = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
-        shade.fill((0, 0, 0, 190))
+        shade.fill((0, 0, 0, 195))
         screen.blit(shade, (0, 0))
-        panel = pygame.Rect(WIDTH // 2 - 260, HEIGHT // 2 - 220,
-                            520, 440 if show_instructions else 360)
+        panel, options = self.pause_layout()
         self.draw_panel(screen, panel)
-        title = "HOW TO PLAY" if show_instructions else "PAUSED"
-        title_surface = self.title_font.render(title, True, self.colors["yellow"])
-        screen.blit(title_surface, title_surface.get_rect(
-            center=(WIDTH // 2, panel.y + 45)))
         if show_instructions:
+            title = pygame.font.SysFont("arial", 36, bold=True).render("HOW TO PLAY", True, self.colors["yellow"])
+            screen.blit(title, title.get_rect(center=(WIDTH // 2, panel.top + 48)))
             lines = [
                 "Click a yellow tile: walk 1 tile",
                 "Click a white tile: run 2 tiles",
@@ -95,22 +103,21 @@ class GameUI:
                 "Stand at a wardrobe and press E: hide",
                 "Press E again to leave a wardrobe",
                 "Find the key, reach exit I7, then press E",
-                "Press ESC to return to the pause menu",
+                "Click anywhere or press ESC to go back",
             ]
-            y = panel.y + 100
-            for line in lines:
-                self.draw_text(screen, line, panel.x + 35, y, self.body_font)
-                y += 36
-            self.draw_text(screen, "ESC  -  BACK", panel.x + 35,
-                           panel.bottom - 45, self.small_font, self.colors["yellow"])
-        else:
-            options = ["RESUME", "HOW TO PLAY", "MAIN MENU", "QUIT"]
-            y = panel.y + 110
-            for i, label in enumerate(options):
-                color = self.colors["yellow"] if i == selected else self.colors["white"]
-                text = self.title_font.render(label, True, color)
-                screen.blit(text, text.get_rect(center=(WIDTH // 2, y)))
-                y += 65
-            self.draw_text(screen, "UP / DOWN to select  -  ENTER to confirm",
-                           panel.x + 45, panel.bottom - 38,
-                           self.small_font, self.colors["muted"])
+            for i, line in enumerate(lines):
+                text = self.body_font.render(line, True, self.colors["white"])
+                screen.blit(text, (panel.left + 35, panel.top + 108 + i * 45))
+            return
+        title = pygame.font.SysFont("arial", 47, bold=True).render("PAUSE", True, (255, 55, 70))
+        screen.blit(title, title.get_rect(center=(WIDTH // 2, panel.top + 47)))
+        mouse = pygame.mouse.get_pos()
+        for label, rect in options:
+            hover = rect.collidepoint(mouse)
+            pygame.draw.rect(screen, (82, 66, 77) if hover else (43, 43, 53), rect, border_radius=10)
+            if hover:
+                pygame.draw.rect(screen, (220, 91, 101), rect, 2, border_radius=10)
+            text = self.body_font.render(label, True, (255, 230, 235) if hover else self.colors["white"])
+            screen.blit(text, text.get_rect(center=rect.center))
+        hint = self.small_font.render("Click an option to select", True, self.colors["muted"])
+        screen.blit(hint, hint.get_rect(center=(WIDTH // 2, panel.bottom - 22)))
