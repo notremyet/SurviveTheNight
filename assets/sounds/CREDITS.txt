@@ -1,0 +1,47 @@
+Survive the Night - sound effects
+
+All sounds are CC0 (public domain): https://creativecommons.org/publicdomain/zero/1.0/
+Credit is not required, but here is where every sound came from (OpenGameArt.org).
+Edits: trimmed, mixed (some sounds combine two clips), faded, volume-levelled, 44.1 kHz 16-bit mono WAV.
+
+walk.wav
+    footstep00  from "50 RPG sound effects" by Kenney  https://opengameart.org/content/50-rpg-sound-effects
+run.wav
+    footstep02  from "50 RPG sound effects" by Kenney  https://opengameart.org/content/50-rpg-sound-effects
+    footstep05  from "50 RPG sound effects" by Kenney  https://opengameart.org/content/50-rpg-sound-effects
+    footstep03  from "50 RPG sound effects" by Kenney  https://opengameart.org/content/50-rpg-sound-effects
+    footstep08  from "50 RPG sound effects" by Kenney  https://opengameart.org/content/50-rpg-sound-effects
+chest.wav
+    metalLatch  from "50 RPG sound effects" by Kenney  https://opengameart.org/content/50-rpg-sound-effects
+    creak1  from "50 RPG sound effects" by Kenney  https://opengameart.org/content/50-rpg-sound-effects
+wardrobe.wav
+    wood_squeak_01  from "100 CC0 metal and wood SFX" by rubberduck  https://opengameart.org/content/100-cc0-metal-and-wood-sfx
+    wood_close_01  from "100 CC0 metal and wood SFX" by rubberduck  https://opengameart.org/content/100-cc0-metal-and-wood-sfx
+zombie_step.wav
+    footstep06  from "50 RPG sound effects" by Kenney  https://opengameart.org/content/50-rpg-sound-effects
+    cloth3  from "50 RPG sound effects" by Kenney  https://opengameart.org/content/50-rpg-sound-effects
+zombie_attack.wav
+    knifeSlice  from "50 RPG sound effects" by Kenney  https://opengameart.org/content/50-rpg-sound-effects
+    zombieYell3  from "Zombie / Skeleton / Monster Voice Effects" by ArcadeParty  https://opengameart.org/content/zombie-skeleton-monster-voice-effects
+zombie_detect.wav
+    zombienoise3  from "Zombie noises and moans" by ianzazz  https://opengameart.org/content/zombie-noises-and-moans
+player_hurt.wav
+    slightscream-06  from "15 vocal male strain/hurt/pain/jump sounds" by qubodup  https://opengameart.org/content/15-vocal-male-strainhurtpainjump-sounds
+noise_maker.wav
+    alarm_0  from "Short alarm" by yd  https://opengameart.org/content/short-alarm
+event.wav
+    horror_effect1  from "Horror SFX" by TinyWorlds  https://opengameart.org/content/horror-sfx
+door_lock.wav
+    wood_slam_01  from "100 CC0 metal and wood SFX" by rubberduck  https://opengameart.org/content/100-cc0-metal-and-wood-sfx
+    DoorLock  from "Door Lock Sounds" by Cough-E  https://opengameart.org/content/door-lock-sounds
+door_unlock.wav
+    UnlockDoor  from "Door Lock Sounds" by Cough-E  https://opengameart.org/content/door-lock-sounds
+item_pickup.wav
+    key-176034  from "Item Pickup / Key" by Musheran  https://opengameart.org/content/item-pickup-key
+medkit.wav
+    cloth1  from "50 RPG sound effects" by Kenney  https://opengameart.org/content/50-rpg-sound-effects
+    Cure4  from "Cure Magic" by Someoneman  https://opengameart.org/content/cure-magic
+win.wav
+    Win_sound  from "Win sound effect" by Listener  https://opengameart.org/content/win-sound-effect
+lose.wav
+    GAMEOVER  from "Game Over!" by zuvizu  https://opengameart.org/content/game-over-0
