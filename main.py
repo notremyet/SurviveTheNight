@@ -660,6 +660,7 @@ def interact_with_current_tile():
     Existing chest/wardrobe rules and action costs remain unchanged.
     """
     global escaped, end_screen_shown, hide_animation_until, round_noise, noise_origin
+    global inventory_closed_for_round
     if (game is None or game.status != "playing" or escaped or player.is_dead
             or player.is_moving or zombies.busy or inventory_open
             or event_phase != "player"):
@@ -733,7 +734,12 @@ def interact_with_current_tile():
                 actions.spend("Hide")
                 player.play_action("hide", duration_ms=550)
                 hide_animation_until = pygame.time.get_ticks() + 550
-                set_goal_hint("You are hiding. Press E again to leave the wardrobe.")
+                # Entering a wardrobe ends the player round immediately,
+                # even when the player had another action remaining.
+                # Leaving the wardrobe still costs no action.
+                actions.remaining = 0
+                inventory_closed_for_round = True
+                set_goal_hint("You are hiding. Your turn ends now.")
             elif result == "leave":
                 set_goal_hint("You left the wardrobe.")
             elif result is None:
@@ -1145,7 +1151,7 @@ while running:
         primary = (activated[0]["cell"], round_noise) if activated and round_noise > 0 else None
         # Wardrobe escape rule: if a zombie shares the hiding room, it must
         # leave via a legal path during this Zombie Turn, regardless of noise.
-        # A successful evacuation costs ONE action in the NEXT player round.
+        # Leaving a wardrobe is free; the next player round keeps both actions.
         hidden = interactables.hidden_in is not None
         hiding_room = zombies._room_for(player.cell) if hidden else None
         zombies_in_room_before = (
@@ -1162,8 +1168,8 @@ while running:
             and zombies._room_for(z.cell) != hiding_room
             for z in zombies.zombies
         ):
-            hide_escape_action_penalty = 1  # Charged once, even if multiple zombies leave.
-            interactables.message = "Zombies evacuated the room! Next round: -1 Action."
+            # Zombies leave the room, but do not reduce the player's next-round actions.
+            interactables.message = "Zombies evacuated the room! You have 2 actions next round."
 
         # Play the running footsteps for each zombie movement phase.
         if any(z.steps_this_turn for z in zombies.zombies):
@@ -1298,10 +1304,6 @@ while running:
                     end_screen_shown = True
             else:
                 actions.next_round()
-                if hide_escape_action_penalty:
-                    actions.remaining = max(0, actions.remaining - hide_escape_action_penalty)
-                    actions.last_action = "Wardrobe escape penalty"
-                    hide_escape_action_penalty = 0
                 inventory_closed_for_round = False
                 # Unused Remotes remain in the bag. The player may press I
                 # before taking actions, but there is no forced popup.
@@ -1318,10 +1320,6 @@ while running:
                 end_screen_shown = True
         else:
             actions.next_round()
-            if hide_escape_action_penalty:
-                actions.remaining = max(0, actions.remaining - hide_escape_action_penalty)
-                actions.last_action = "Wardrobe escape penalty"
-                hide_escape_action_penalty = 0
             inventory_closed_for_round = False
             # Remote stays available via I; never open the bag automatically.
         # Keep any event-generated noise for the next player round.
