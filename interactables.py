@@ -20,6 +20,7 @@ class InteractableManager:
         self.hidden_in = None
         self.message = "Stand on a chest or wardrobe and press E"
         self.images = {}
+        self._scaled_images = {}  # cache by type, state and tile dimensions
         asset_dir = Path(__file__).resolve().parent / "assets" / "interactables"
         for kind in ("wardrobe", "chest"):
             for state in ("open", "closed"):
@@ -75,5 +76,10 @@ class InteractableManager:
             ratio = min(max_w / sprite.get_width(), max_h / sprite.get_height())
             size = (max(1, round(sprite.get_width() * ratio)),
                     max(1, round(sprite.get_height() * ratio)))
-            scaled = pygame.transform.smoothscale(sprite, size)
+            cache_key = (obj.kind, "open" if obj.opened else "closed",
+                         tile_width, tile_height)
+            scaled = self._scaled_images.get(cache_key)
+            if scaled is None:
+                scaled = pygame.transform.smoothscale(sprite, size)
+                self._scaled_images[cache_key] = scaled
             surface.blit(scaled, scaled.get_rect(center=(round(cx), round(cy))))

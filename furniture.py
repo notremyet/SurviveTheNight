@@ -66,6 +66,7 @@ class FurnitureManager:
 
 
         self.images = {}
+        self._scaled_sprites = {}  # avoid repeated transform/rotate on every frame
         assets_path = (
             Path(__file__).resolve().parent
             / "assets"
@@ -474,19 +475,21 @@ class FurnitureManager:
             image = self.images.get(item.name)
 
             if image is not None:
-                # Rotate a wide sprite when its furniture occupies vertical tiles.
-                if len(item.cells) == 2 and bounds.height > bounds.width:
-                    if image.get_width() > image.get_height():
+                vertical = len(item.cells) == 2 and bounds.height > bounds.width
+                horizontal = len(item.cells) == 2 and bounds.width > bounds.height
+                rotated = ((vertical and image.get_width() > image.get_height()) or
+                           (horizontal and image.get_height() > image.get_width()))
+                cache_key = (item.name, rotated, rect.width, rect.height)
+                sprite = self._scaled_sprites.get(cache_key)
+                if sprite is None:
+                    if rotated:
                         image = pygame.transform.rotate(image, 90)
-                elif len(item.cells) == 2 and bounds.width > bounds.height:
-                    if image.get_height() > image.get_width():
-                        image = pygame.transform.rotate(image, 90)
-
-                # Fit inside the assigned rectangle without stretching.
-                iw, ih = image.get_size()
-                scale = min(rect.width / iw, rect.height / ih)
-                size = (max(1, round(iw * scale)), max(1, round(ih * scale)))
-                sprite = pygame.transform.smoothscale(image, size)
+                    # Fit inside the assigned rectangle without stretching.
+                    iw, ih = image.get_size()
+                    scale = min(rect.width / iw, rect.height / ih)
+                    size = (max(1, round(iw * scale)), max(1, round(ih * scale)))
+                    sprite = pygame.transform.smoothscale(image, size)
+                    self._scaled_sprites[cache_key] = sprite
                 surface.blit(sprite, sprite.get_rect(center=rect.center))
             else:
                 # Show a placeholder when the corresponding PNG is missing.

@@ -65,6 +65,18 @@ for state, name in (("placed", "noise_maker_placed.png"),
         NOISE_MAKER_IMAGES[state] = pygame.transform.smoothscale(image, (width, height))
 
 
+# Cache reward card icons once instead of reading PNGs every display frame.
+LOOT_IMAGE_FILES = {
+    ItemType.KEY: "key.png", ItemType.MEDKIT: "medkit.png",
+    ItemType.NOISE_MAKER: "noisemaker.png", ItemType.NOTHING: "nothing.png",
+}
+loot_card_sprites = {}
+for item_type, filename in LOOT_IMAGE_FILES.items():
+    path = BASE_DIR / "assets" / "Itemcard" / filename
+    if path.exists():
+        image = pygame.image.load(str(path)).convert_alpha()
+        loot_card_sprites[item_type] = pygame.transform.smoothscale(image, (112, 112))
+
 # Game Master event artwork and locked-door overlay.
 # Initialise these containers BEFORE loading the image assets.
 event_card_images = {}
@@ -76,7 +88,13 @@ for dice_number in range(1, 7):
         artwork = pygame.image.load(str(event_path)).convert_alpha()
         visible = artwork.get_bounding_rect(min_alpha=8)
         if visible.width and visible.height:
-            event_card_images[dice_number] = artwork.subsurface(visible).copy()
+            cropped = artwork.subsurface(visible).copy()
+            # Drawn in 350x440 modal, 296x324 content box.
+            ratio = min(296 / cropped.get_width(), 324 / cropped.get_height())
+            event_card_images[dice_number] = pygame.transform.smoothscale(
+                cropped, (max(1, round(cropped.get_width() * ratio)),
+                          max(1, round(cropped.get_height() * ratio))),
+            )
 # Add your own padlock artwork here. The original lock.png remains a fallback.
 # Use a transparent PNG with only the padlock (no chain).
 CUSTOM_PADLOCK_PATH = BASE_DIR / "assets" / "interactables" / "door_padlock.png"
@@ -110,7 +128,7 @@ dice_roll_started = 0
 dice_result_until = 0
 rolled_dice_value = None
 DICE_ROLL_DURATION = 1900
-ZOMBIE_TO_EVENT_DELAY = 2200  # pause after zombie actions before the event phase
+ZOMBIE_TO_EVENT_DELAY = 450  # pause after zombie actions before the event phase
 DEATH_SCREEN_DELAY = 1800  # show the fatal hit before opening Game Over
 death_pause_started_at = None
 DICE_RESULT_HOLD = 1500
@@ -165,15 +183,7 @@ def draw_loot_reveal(surface):
             description = "Added to your inventory. Press I to check."
         else:
             description = "Item was not added to inventory."
-    asset_names = {
-        ItemType.KEY: "key.png",
-        ItemType.MEDKIT: "medkit.png",
-        ItemType.NOISE_MAKER: "noisemaker.png",
-        ItemType.NOTHING: "nothing.png",
-    }
-    image_path = BASE_DIR / "assets" / "Itemcard" / asset_names.get(
-        loot_reveal_item, "nothing.png"
-    )
+    item_image = loot_card_sprites.get(loot_reveal_item)
 
     shade = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
     shade.fill((0, 0, 0, 105))
@@ -190,11 +200,9 @@ def draw_loot_reveal(surface):
     heading = title_font.render("EVENT REWARD" if loot_reveal_source == "event" else "CHEST SEARCH", True, (255, 217, 65))
     surface.blit(heading, heading.get_rect(center=(WIDTH//2, card.y+35)))
 
-    try:
-        item_image = pygame.image.load(str(image_path)).convert_alpha()
-        item_image = pygame.transform.smoothscale(item_image, (112, 112))
+    if item_image is not None:
         surface.blit(item_image, item_image.get_rect(center=(WIDTH//2, card.y+135)))
-    except (pygame.error, FileNotFoundError):
+    else:
         fallback = body_font.render("Item image unavailable", True, (190,190,195))
         surface.blit(fallback, fallback.get_rect(center=(WIDTH//2, card.y+130)))
 
@@ -257,12 +265,12 @@ def draw_dice_modal(surface, rolling=False, face=None):
         shown_face = (int(elapsed / 85) % 6) + 1
         angle = (elapsed * 1.15) % 360
         pulse = 1.0 + 0.06 * math.sin(elapsed / 48.0)
-        hint = "Rolling..."
+        hint = "Rolling... (Enter / Click to skip)"
     else:
         shown_face = face if face in range(1, 7) else 1
         angle = 0
         pulse = 1.0
-        hint = f"Dice result: {shown_face}" if face else "Click the die to roll"
+        hint = f"Dice result: {shown_face}" if face else "Click anywhere or press Enter to roll"
 
     for px, py in pip_layout[shown_face]:
         pygame.draw.circle(
@@ -303,12 +311,7 @@ def draw_event_reveal(surface):
     if image:
         # The supplied cards have large transparent margins. We crop those
         # while loading, then scale the card itself without stretching it.
-        box_w, box_h = panel.width - 54, panel.height - 116
-        ratio = min(box_w / image.get_width(), box_h / image.get_height())
-        img_size = (max(1, round(image.get_width() * ratio)),
-                    max(1, round(image.get_height() * ratio)))
-        scaled = pygame.transform.smoothscale(image, img_size)
-        surface.blit(scaled, scaled.get_rect(center=(WIDTH//2, panel.y + 177)))
+        surface.blit(image, image.get_rect(center=(WIDTH//2, panel.y + 177)))
     else:
         title = pygame.font.SysFont("arial", 34, bold=True).render(f"EVENT {dice}", True, (255,220,100))
         surface.blit(title, title.get_rect(center=(WIDTH//2, HEIGHT//2-80)))
@@ -328,28 +331,52 @@ def draw_event_reveal(surface):
         surface.blit(text_surface, text_surface.get_rect(center=(WIDTH//2, panel.bottom-63+i*23)))
 
 
-def draw_locked_door_overlays(surface):
-    if lock_overlay is None:
-        return
-    # Change just this factor if your own padlock needs a small size adjustment.
-    max_side = max(26, int(TILE_WIDTH * 0.39))
-    scale = min(max_side / lock_overlay.get_width(),
+# Artwork door centers, measured against assets/house_map.png (900x630 reference).
+# These are the visible door sprites, which are not all centered exactly on
+# the underlying grid boundaries. Match both cells regardless of pair order.
+DOOR_ART_CENTERS = {
+    edge("C2", "C3"): (225, 186),
+    edge("D1", "E1"): (365, 54),
+    edge("D4", "E4"): (365, 311),
+    edge("E1", "F1"): (450, 54),
+    edge("E4", "F4"): (450, 311),
+    edge("F2", "F3"): (500, 186),
+    edge("B5", "B6"): (135, 436),
+    edge("E6", "F6"): (450, 480),
+    edge("G6", "H6"): (621, 480),
+}
+
+# Cache the icon once; doing smoothscale every video frame causes stuttering.
+lock_overlay_sprite = None
+if lock_overlay is not None:
+    max_side = max(20, int(TILE_WIDTH * 0.39))
+    ratio = min(max_side / lock_overlay.get_width(),
                 max_side / lock_overlay.get_height())
-    sprite = pygame.transform.smoothscale(
+    lock_overlay_sprite = pygame.transform.smoothscale(
         lock_overlay,
-        (max(1, round(lock_overlay.get_width() * scale)),
-         max(1, round(lock_overlay.get_height() * scale))),
+        (max(1, round(lock_overlay.get_width() * ratio)),
+         max(1, round(lock_overlay.get_height() * ratio))),
     )
-    # Event 3 artwork follows its active timer, never a stale lock/image.
+
+
+def draw_locked_door_overlays(surface):
+    if lock_overlay_sprite is None:
+        return
     for locked_edge, remaining_turns in temporary_event_locks.items():
         if remaining_turns <= 0 or locked_edge not in board.locked:
             continue
-        a, b = tuple(locked_edge)
-        ax, ay = cell_to_xy(a)
-        bx, by = cell_to_xy(b)
-        center = (MAP_X + (ax+bx+1)*TILE_WIDTH//2,
-                  MAP_Y + (ay+by+1)*TILE_HEIGHT//2)
-        surface.blit(sprite, sprite.get_rect(center=center))
+        if locked_edge in DOOR_ART_CENTERS:
+            px, py = DOOR_ART_CENTERS[locked_edge]
+            center = (MAP_X + round(px * MAP_WIDTH / 900),
+                      MAP_Y + round(py * MAP_HEIGHT / 630))
+        else:
+            # Fallback to grid-edge center if more doors are added later.
+            a, b = tuple(locked_edge)
+            ax, ay = cell_to_xy(a)
+            bx, by = cell_to_xy(b)
+            center = (MAP_X + round((ax + bx + 1) * TILE_WIDTH / 2),
+                      MAP_Y + round((ay + by + 1) * TILE_HEIGHT / 2))
+        surface.blit(lock_overlay_sprite, lock_overlay_sprite.get_rect(center=center))
 
 
 def set_goal_hint(text, duration=2600):
@@ -925,8 +952,19 @@ while running:
             # ENTER performs exactly ONE step in the current Event modal.
             # Inventory and pause are handled above and always take priority.
             if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
-                if event_phase in ("roll", "rolling") and game.status == "playing":
-                    # ENTER skips animation and reveals the actual random result.
+                if (event_phase == "zombie_pause" and game.status == "playing"
+                        and not zombies.busy):
+                    # Skip only the idle interval; start the dice animation.
+                    event_phase = "rolling"
+                    dice_roll_started = pygame.time.get_ticks()
+                    continue
+                if event_phase == "roll" and game.status == "playing":
+                    # Start spinning if the initial dice prompt is still open.
+                    event_phase = "rolling"
+                    dice_roll_started = pygame.time.get_ticks()
+                    continue
+                if event_phase == "rolling" and game.status == "playing":
+                    # ENTER during the animation skips to the final result.
                     reveal_dice_result_immediately()
                     continue
                 if event_phase == "reveal":
@@ -967,14 +1005,17 @@ while running:
                 # Likewise, dismiss the Event 5 reward without a separate button.
                 loot_reveal_until = pygame.time.get_ticks()
                 continue
-            if event_phase == "roll" and game is not None and game.status == "playing":
-                # The whole Game Master panel is clickable, not just the die.
-                # Match the 430 x 390 rectangle used by draw_dice_modal().
+            if event_phase in ("roll", "rolling") and game is not None and game.status == "playing":
+                # Click anywhere in the Game Master panel (not just on the die).
+                # The animation starts normally; clicking while rolling skips it.
                 dice_panel = pygame.Rect((WIDTH - 430)//2, (HEIGHT - 390)//2,
                                          430, 390)
                 if dice_panel.collidepoint(event.pos):
-                    dice_roll_started = pygame.time.get_ticks()
-                    event_phase = "rolling"
+                    if event_phase == "roll":
+                        event_phase = "rolling"
+                        dice_roll_started = pygame.time.get_ticks()
+                    else:
+                        reveal_dice_result_immediately()
                 continue
             if event_phase != "player":
                 continue
@@ -1152,7 +1193,10 @@ while running:
     if (event_phase == "zombie_pause"
             and zombie_phase_finished_at is not None
             and pygame.time.get_ticks() - zombie_phase_finished_at >= ZOMBIE_TO_EVENT_DELAY):
-        event_phase = "roll"
+        # Start the rolling animation automatically when Game Master begins.
+        # The player may press Enter or click the modal to skip to the result.
+        event_phase = "rolling"
+        dice_roll_started = pygame.time.get_ticks()
         zombie_phase_finished_at = None
 
     if (event_phase == "rolling" and
