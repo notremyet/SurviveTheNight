@@ -24,6 +24,7 @@ class ItemUseAnimation:
     def __init__(self, base_dir):
         self.base_dir = Path(base_dir)
         self.frames = {}
+        self.scaled_frames = {}
         self.active_name = None
         self.started_at = 0
 
@@ -73,6 +74,13 @@ class ItemUseAnimation:
         # Bottom-right within the game window; deliberately separate from team's HUD.
         max_dim = 104
         factor = min(max_dim / max(1, image.get_width()), max_dim / max(1, image.get_height()))
-        scaled = pygame.transform.smoothscale(image, (max(1, round(image.get_width() * factor)),
-                                                         max(1, round(image.get_height() * factor))))
+        key = (self.active_name, index)
+        scaled = self.scaled_frames.get(key)
+        if scaled is None:
+            scaled = pygame.transform.smoothscale(
+                image,
+                (max(1, round(image.get_width() * factor)),
+                 max(1, round(image.get_height() * factor))),
+            )
+            self.scaled_frames[key] = scaled
         surface.blit(scaled, scaled.get_rect(center=(w // 2 + 225, h // 2 - 145)))

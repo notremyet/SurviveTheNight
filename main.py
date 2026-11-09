@@ -28,12 +28,19 @@ from item_animations import ItemUseAnimation
 from sound_manager import SoundManager
 from intro_scene import IntroScene
 
+from functools import lru_cache
+
+@lru_cache(maxsize=32)
+def cached_sys_font(name, size, bold=False):
+    """Reuse font objects; creating font files every frame can stall rendering."""
+    return pygame.font.SysFont(name, size, bold=bold)
+
 pygame.init()
 sounds = SoundManager()  # Use the teammate's existing music and SFX files.
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
 pygame.display.set_caption("SURVIVE THE NIGHT")
 clock = pygame.time.Clock()
-font = pygame.font.SysFont("arial", 20)
+font = cached_sys_font("arial", 20)
 
 # Fit the complete map between the top HUD and bottom status/inventory bar.
 TILE_WIDTH = TILE_HEIGHT = min(90, (WIDTH - 40) // COLS, (HEIGHT - 190) // ROWS)
@@ -198,8 +205,8 @@ def draw_loot_reveal(surface):
     pygame.draw.rect(surface, (25, 23, 34), card, border_radius=18)
     pygame.draw.rect(surface, (225, 180, 65), card, 3, border_radius=18)
 
-    title_font = pygame.font.SysFont("arial", 30, bold=True)
-    body_font = pygame.font.SysFont("arial", 19)
+    title_font = cached_sys_font("arial", 30, bold=True)
+    body_font = cached_sys_font("arial", 19)
     heading = title_font.render("EVENT REWARD" if loot_reveal_source == "event" else "CHEST SEARCH", True, (255, 217, 65))
     surface.blit(heading, heading.get_rect(center=(WIDTH//2, card.y+35)))
 
@@ -239,8 +246,8 @@ def draw_dice_modal(surface, rolling=False, face=None):
     pygame.draw.rect(surface, (25, 23, 34), panel, border_radius=20)
     pygame.draw.rect(surface, (230, 185, 75), panel, 3, border_radius=20)
 
-    heading_font = pygame.font.SysFont("arial", 30, bold=True)
-    hint_font = pygame.font.SysFont("arial", 19)
+    heading_font = cached_sys_font("arial", 30, bold=True)
+    hint_font = cached_sys_font("arial", 19)
     heading = heading_font.render("GAME MASTER EVENT", True, (255, 218, 95))
     surface.blit(heading, heading.get_rect(center=(WIDTH//2, panel.y+48)))
 
@@ -316,10 +323,10 @@ def draw_event_reveal(surface):
         # while loading, then scale the card itself without stretching it.
         surface.blit(image, image.get_rect(center=(WIDTH//2, panel.y + 177)))
     else:
-        title = pygame.font.SysFont("arial", 34, bold=True).render(f"EVENT {dice}", True, (255,220,100))
+        title = cached_sys_font("arial", 34, bold=True).render(f"EVENT {dice}", True, (255,220,100))
         surface.blit(title, title.get_rect(center=(WIDTH//2, HEIGHT//2-80)))
     msg = str(event_result.get("message", "Event resolved"))
-    font_obj = pygame.font.SysFont("arial", 18, bold=True)
+    font_obj = cached_sys_font("arial", 18, bold=True)
     words, lines, current = msg.split(), [], ""
     for word in words:
         candidate = word if not current else current + " " + word
@@ -572,7 +579,7 @@ def draw_end_turn_button(surface):
     pygame.draw.rect(surface, fill, end_turn_button, border_radius=8)
     pygame.draw.rect(surface, (245, 225, 152) if ready else (115, 112, 120),
                      end_turn_button, 2, border_radius=8)
-    button_font = pygame.font.SysFont("arial", 16, bold=True)
+    button_font = cached_sys_font("arial", 16, bold=True)
     label = "END TURN" if ready else "END TURN (2 actions)"
     rendered = button_font.render(label, True, (28, 25, 31) if ready else (200, 200, 205))
     surface.blit(rendered, rendered.get_rect(center=end_turn_button.center))
@@ -765,7 +772,7 @@ def draw_exit_sign(surface):
     panel = pygame.Surface((sign_w, sign_h), pygame.SRCALPHA)
     pygame.draw.rect(panel, (26, 117, 63, 205), panel.get_rect(), border_radius=5)
     pygame.draw.rect(panel, (195, 255, 208, 205), panel.get_rect(), 1, border_radius=5)
-    letters = pygame.font.SysFont("arial", 15, bold=True).render("EXIT", True, (255,255,255))
+    letters = cached_sys_font("arial", 15, bold=True).render("EXIT", True, (255,255,255))
     panel.blit(letters, letters.get_rect(center=panel.get_rect().center))
     # The map artwork draws its EXIT door at the *bottom edge* of I7.
     # Position this sign just above the actual door, leaving a small gap.
@@ -786,7 +793,7 @@ def draw_interact_prompt(surface):
     panel = pygame.Surface((prompt_width, prompt_height), pygame.SRCALPHA)
     pygame.draw.rect(panel, (0, 0, 0, 165), panel.get_rect(), border_radius=7)
     pygame.draw.rect(panel, (230, 230, 230, 145), panel.get_rect(), 1, border_radius=7)
-    letter = pygame.font.SysFont("arial", 22, bold=True).render("E", True, (255, 255, 255))
+    letter = cached_sys_font("arial", 22, bold=True).render("E", True, (255, 255, 255))
     panel.blit(letter, letter.get_rect(center=panel.get_rect().center))
     prompt_y = tile_top + (30 if player.cell == EXIT_CELL else 4)
     surface.blit(panel, (int(cx-prompt_width/2), int(prompt_y)))
@@ -854,7 +861,7 @@ def reveal_dice_result_immediately():
 running = True
 
 while running:
-    dt = min(clock.tick(FPS) / 1000.0, 0.05)
+    dt = min(clock.tick(min(FPS, 45)) / 1000.0, 0.05)
 
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
