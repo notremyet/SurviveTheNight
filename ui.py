@@ -8,8 +8,6 @@ class GameUI:
         self.small_font = pygame.font.SysFont("arial", 16)
         self.title_font = pygame.font.SysFont("arial", 24, bold=True)
         self.body_font = pygame.font.SysFont("arial", 18)
-        self._text_cache = {}
-        self._text_cache_limit = 256
         self.colors = {
             "panel": (22, 22, 29), "border": (100, 95, 100),
             "white": (240, 240, 240), "red": (210, 55, 65),
@@ -22,15 +20,7 @@ class GameUI:
         pygame.draw.rect(screen, self.colors["border"], rect, 2, border_radius=10)
 
     def draw_text(self, screen, text, x, y, font=None, color=None):
-        draw_font = font or self.font
-        draw_color = color or self.colors["white"]
-        key = (id(draw_font), str(text), tuple(draw_color))
-        surface = self._text_cache.get(key)
-        if surface is None:
-            surface = draw_font.render(str(text), True, draw_color)
-            if len(self._text_cache) >= self._text_cache_limit:
-                self._text_cache.clear()
-            self._text_cache[key] = surface
+        surface = (font or self.font).render(str(text), True, color or self.colors["white"])
         screen.blit(surface, (x, y))
         return surface.get_rect(topleft=(x, y))
 
@@ -44,16 +34,12 @@ class GameUI:
         for i in range(max_hp):
             color = self.colors["red"] if i < hp else self.colors["gray"]
             pygame.draw.circle(screen, color, (85 + i * 27, 35), 9)
-        # Stable labels use the same bounded text cache as the rest of the HUD.
-        round_label = f"ROUND {round_number}/{max_rounds}"
-        round_width = self.title_font.size(round_label)[0]
-        self.draw_text(screen, round_label, WIDTH // 2 - round_width // 2,
-                       42 - self.title_font.get_height() // 2,
-                       self.title_font, self.colors["white"])
-        action_label = f"ACTIONS: {actions}/{max_actions}"
-        action_width = self.font.size(action_label)[0]
-        self.draw_text(screen, action_label, WIDTH - action_width - 32, 25,
-                       self.font, self.colors["white"])
+        round_surface = self.title_font.render(
+            f"ROUND {round_number}/{max_rounds}", True, self.colors["white"])
+        screen.blit(round_surface, round_surface.get_rect(center=(WIDTH // 2, 42)))
+        action_surface = self.font.render(
+            f"ACTIONS: {actions}/{max_actions}", True, self.colors["white"])
+        screen.blit(action_surface, (WIDTH - action_surface.get_width() - 32, 25))
 
         # Bottom bar: live noise/goal on left, inventory slots on right.
         bottom_y = HEIGHT - 82
