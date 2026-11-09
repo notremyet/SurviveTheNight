@@ -25,8 +25,10 @@ from screen_manager import ScreenManager
 from events import EventSystem
 from item_use_ui import ItemUsePanel
 from item_animations import ItemUseAnimation
+from sound_manager import SoundManager
 
 pygame.init()
+sounds = SoundManager()  # Use the teammate's existing music and SFX files.
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
 pygame.display.set_caption("SURVIVE THE NIGHT")
 clock = pygame.time.Clock()
@@ -355,6 +357,7 @@ def set_goal_hint(text, duration=2600):
 
 def reset_game():
     """Create a fresh game world whenever START GAME is selected."""
+    sounds.reset()
     global board, player, furniture, interactables, actions, zombies
     global inventory, loot_system, search_system, escaped
     global round_noise, noise_origin, game, end_screen_shown, event_noise_total
@@ -428,6 +431,7 @@ def expire_event_locks_after_zombie_turn():
         turns_left -= 1
         if turns_left <= 0:
             board.locked.discard(locked_edge)
+            sounds.play("door_unlock")
             del temporary_event_locks[locked_edge]
         else:
             temporary_event_locks[locked_edge] = turns_left
@@ -464,6 +468,7 @@ def use_inventory_slot(index):
     item = owned[index]
     if item == ItemType.MEDKIT:
         if inventory.use_medkit_on_player(player):
+            sounds.play("medkit")
             item_use_animation.start("medkit")
             item_use_panel.message = "Medkit used: +1 HP."
         else:
@@ -479,11 +484,13 @@ def use_inventory_slot(index):
                 item_use_panel.message = "Cannot place Noise Maker right now."
         else:
             player.play_action("noise", duration_ms=550)
+            sounds.play("noise_maker")
             item_use_animation.start("place_noise_maker")
             item_use_panel.message = f"Noise Maker placed at {player.cell}. Remote {remote_id} ready."
     elif isinstance(item, dict) and item.get("type") == "remote":
         if activate_remote(item.get("id")):
             player.play_action("noise", duration_ms=550)  # Fallback until remote artwork exists.
+            sounds.play("noise_maker")
             item_use_animation.start("activate_remote")
             item_use_panel.message = "Remote activated. Zombie hears it this turn."
         else:
@@ -626,6 +633,7 @@ def interact_with_current_tile():
     if interactables.hidden_in is not None:
         result = interactables.interact(player.cell)
         if result == "leave":
+            sounds.play("wardrobe")
             hide_animation_until = 0
             player.play_action("hide", duration_ms=450)
             set_goal_hint("You left the wardrobe. Keep moving toward the exit.")
@@ -646,12 +654,15 @@ def interact_with_current_tile():
         else:
             result = interactables.interact(player.cell)
             if result == "chest_open":
+                sounds.play("chest")
                 actions.spend("Search")
                 player.play_action("search", duration_ms=650)
                 round_noise += 1
                 noise_origin = player.cell
                 loot_result = search_system.search_chest(result)
                 if loot_result is not None:
+                    if loot_result.get("added_to_inventory", False):
+                        sounds.play("item_pickup")
                     found_item = loot_result.get("item")
                     loot_message = loot_result.get("message", "You found an item.")
                     interactables.message = "Chest opened - " + loot_message
@@ -671,6 +682,7 @@ def interact_with_current_tile():
                 interactables.message = "Chest already opened"
                 set_goal_hint("This chest has already been searched. Try another chest.")
             elif result == "hide":
+                sounds.play("wardrobe")
                 actions.spend("Hide")
                 player.play_action("hide", duration_ms=550)
                 hide_animation_until = pygame.time.get_ticks() + 550
@@ -748,6 +760,9 @@ def reveal_dice_result_immediately():
         interactables.hidden_in is not None,
         dice=rolled_dice_value,
     )
+    sounds.play("event")
+    if event_result.get("dice") == 3 and event_result.get("success", True):
+        sounds.play("door_lock")
     # The alarm happens after the zombie phase. Carry its +2 sound into
     # the following player round, show it on the HUD, and let zombies
     # hear it when that round ends (instead of discarding it immediately).
@@ -763,6 +778,8 @@ def reveal_dice_result_immediately():
             if ev.kind == "attack"
         )
         if extra_damage:
+            sounds.play("zombie_attack")
+            sounds.play("hurt")
             player.take_damage(extra_damage)
     elif event_result.get("dice") == 5:
         item_result = event_result.get("item_result") or {}
@@ -779,6 +796,8 @@ def reveal_dice_result_immediately():
                 + ("ADDED TO INVENTORY" if received else "NOT ADDED")
             )
             pending_event_loot = (found, received)
+            if received:
+                sounds.play("item_pickup")
 
     event_phase = "dice_result"
     dice_result_until = pygame.time.get_ticks() + DICE_RESULT_HOLD
@@ -1004,6 +1023,7 @@ while running:
                         if path and not any(zombies.occupied(step) for step in path[1:]):
                             if player.start_route(path, style):
                                 actions.spend(style.capitalize())
+                                sounds.play(style)
                                 pending_movement_noise = (target, style)
                                 interactables.message = f"{style.capitalize()}: {' -> '.join(path)}"
                         else:
@@ -1058,6 +1078,11 @@ while running:
             player.cell, interactables.hidden_in is not None,
             priority_noise=primary,
         )
+        sounds.play("zombie_step")
+        if any(ev.kind == "attack" for ev in combat_events):
+            sounds.play("zombie_attack")
+        elif any(ev.kind == "spotted" for ev in combat_events):
+            sounds.play("zombie_detect")
         # Do not remove activated devices yet: zombies still have walking/attack
         # animations to play, and the active artwork must be visible meanwhile.
         # An Event 3 lock is active for two complete subsequent rounds.
@@ -1071,6 +1096,7 @@ while running:
         if total_damage:
             lost = player.take_damage(total_damage)
             if lost:
+                sounds.play("hurt")
                 interactables.message = f"Zombie attack! -{lost} HP"
         elif any(ev.kind == "spotted" for ev in combat_events):
             interactables.message = "A zombie spotted you!"
@@ -1170,6 +1196,9 @@ while running:
             inventory_closed_for_round = False
             # Remote stays available via I; never open the bag automatically.
         # Keep any event-generated noise for the next player round.
+
+    audio_status = game.status if game is not None else "playing"
+    sounds.sync(screen_manager.current_screen, paused, audio_status)
 
     if screen_manager.current_screen == "game" and game is not None:
         screen.fill((20, 18, 28))

@@ -14,9 +14,13 @@ class SoundManager:
             if not pygame.mixer.get_init():
                 pygame.mixer.init()
             self.ready = True
-            for key in ("walk", "run", "chest", "wardrobe", "zombie_step",
-                        "zombie_attack", "hurt", "noise_maker", "event", "win", "lose"):
-                path = self.base / (key + ".wav")
+            names = ("walk", "run", "chest", "wardrobe", "zombie_step",
+                     "zombie_attack", "zombie_detect", "hurt", "noise_maker",
+                     "medkit", "item_pickup", "door_lock", "door_unlock",
+                     "event", "win", "lose")
+            for key in names:
+                filename = "player_hurt.wav" if key == "hurt" else key + ".wav"
+                path = self.base / filename
                 if path.is_file():
                     try:
                         self.effects[key] = pygame.mixer.Sound(str(path))
