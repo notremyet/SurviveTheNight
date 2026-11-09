@@ -102,7 +102,7 @@ class GameUI:
                 "Stand on a chest and press E: search",
                 "Stand at a wardrobe and press E: hide",
                 "Press E again to leave a wardrobe",
-                "Find the key, reach exit I7, then press E",
+                "Find the key, reach exit, then press E",
                 "Click anywhere or press ESC to go back",
             ]
             for i, line in enumerate(lines):

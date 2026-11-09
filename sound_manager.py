@@ -9,6 +9,7 @@ class SoundManager:
         self.ready = False
         self.effects = {}
         self.music_state = None
+        self._music_paused = None
         self.outcome = None
         try:
             if not pygame.mixer.get_init():
@@ -40,6 +41,7 @@ class SoundManager:
     def reset(self):
         self.outcome = None
         self.music_state = None
+        self._music_paused = None
         if self.ready:
             pygame.mixer.music.stop()
 
@@ -54,6 +56,7 @@ class SoundManager:
             target = "silent"
         if target != self.music_state:
             self.music_state = target
+            self._music_paused = None  # New track has no previous pause state.
             pygame.mixer.music.stop()
             if target != "silent":
                 path = self.base / ("ambience.ogg" if target == "game" else "menu_music.ogg")
@@ -66,7 +69,18 @@ class SoundManager:
                         print(f"Music error ({path.name}): {error}")
                 else:
                     print(f"Music file not found: {path}")
-        if paused:
-            pygame.mixer.music.pause()
-        else:
-            pygame.mixer.music.unpause()
+        # Do not call SDL_mixer pause/unpause every game frame.
+        # Only change music state when the user actually toggles pause,
+        # or when music has just switched to another track.
+        if target == "silent":
+            self._music_paused = None
+        elif self._music_paused is None:
+            if paused:
+                pygame.mixer.music.pause()
+            self._music_paused = bool(paused)
+        elif bool(paused) != self._music_paused:
+            if paused:
+                pygame.mixer.music.pause()
+            else:
+                pygame.mixer.music.unpause()
+            self._music_paused = bool(paused)
